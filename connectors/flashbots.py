@@ -89,6 +89,7 @@ class FlashbotsConnector:
         self,
         relay_url: str = "https://relay.flashbots.net",
         network: str = "mainnet",
+        builder_address: Optional[str] = None,
     ) -> None:
         """
         Initialize Flashbots connector.
@@ -96,9 +97,11 @@ class FlashbotsConnector:
         Args:
             relay_url: Flashbots relay endpoint
             network: Network identifier ("mainnet", "goerli", etc.)
+            builder_address: Optional builder address for bribes (uses relay default if None)
         """
         self.relay_url = relay_url
         self.network = network
+        self.builder_address = builder_address
         self._flashbots_provider = None
         self._web3 = None
         self._signer = None
@@ -329,12 +332,24 @@ class FlashbotsConnector:
 
         Returns:
             Bribe transaction
+
+        Note:
+            If builder_address is not set, this will use a placeholder.
+            In production, set the builder address via constructor or use
+            the Flashbots relay's default mechanism (sending to block.coinbase).
         """
-        # Flashbots builder address (gets bribe if bundle succeeds)
-        flashbots_builder = "0xdAC17F958D2ee523a2206206994597C13D831ec7"
+        # Use configured builder address or placeholder
+        # In practice, Flashbots often uses block.coinbase for bribes
+        builder_address = self.builder_address or "0x0000000000000000000000000000000000000000"
+
+        if not self.builder_address:
+            log.warning(
+                "bribe_address_not_configured",
+                message="Using placeholder address. Configure builder_address in production.",
+            )
 
         return FlashbotsTransaction(
-            to=flashbots_builder,
+            to=builder_address,
             data="0x",
             value=amount_wei,
             gas=21000,  # Simple transfer
@@ -487,6 +502,18 @@ class FlashbotsConnector:
 def create_flashbots_connector(
     relay_url: str = "https://relay.flashbots.net",
     network: str = "mainnet",
+    builder_address: Optional[str] = None,
 ) -> FlashbotsConnector:
-    """Create a Flashbots connector instance."""
-    return FlashbotsConnector(relay_url=relay_url, network=network)
+    """
+    Create a Flashbots connector instance.
+
+    Args:
+        relay_url: Flashbots relay endpoint
+        network: Network identifier
+        builder_address: Optional builder address for bribes
+    """
+    return FlashbotsConnector(
+        relay_url=relay_url,
+        network=network,
+        builder_address=builder_address,
+    )
