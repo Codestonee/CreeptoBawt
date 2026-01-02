@@ -181,7 +181,7 @@ class TradingEngine:
             "engine_initialized",
             mode=self.config.initial_mode,
             use_redis=self.config.use_redis,
-            uvloop_available=HAS_UVLOOP,
+            fast_loop_available=HAS_FAST_LOOP,
         )
     
     @property
