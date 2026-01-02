@@ -1,5 +1,5 @@
 import apiClient from './client';
-import { SystemStatus, KillSwitchRequest, KillSwitchResponse } from '../types';
+import { SystemStatus, KillSwitchResponse } from '../types';
 
 export const getSystemStatus = async (): Promise<SystemStatus> => {
   const response = await apiClient.get<SystemStatus>('/status');

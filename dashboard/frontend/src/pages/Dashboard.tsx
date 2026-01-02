@@ -1,6 +1,6 @@
 import React from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Wallet, TrendingUp, ShoppingCart, DollarSign } from 'lucide-react';
+import { TrendingUp, ShoppingCart, DollarSign } from 'lucide-react';
 import { StatsCard } from '../components/dashboard/StatsCard';
 import { BalanceCard } from '../components/dashboard/BalanceCard';
 import { PositionsTable } from '../components/dashboard/PositionsTable';
