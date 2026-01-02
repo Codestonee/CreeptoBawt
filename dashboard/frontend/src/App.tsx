@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Layout } from './components/layout/Layout';
 import { Dashboard } from './pages/Dashboard';
+import { Balances } from './pages/Balances';
 import { Positions } from './pages/Positions';
 import { Orders } from './pages/Orders';
 import { Trades } from './pages/Trades';
@@ -42,7 +43,7 @@ const AppContent: React.FC = () => {
     >
       <Routes>
         <Route path="/" element={<Dashboard />} />
-        <Route path="/balances" element={<Dashboard />} />
+        <Route path="/balances" element={<Balances />} />
         <Route path="/positions" element={<Positions />} />
         <Route path="/orders" element={<Orders />} />
         <Route path="/trades" element={<Trades />} />

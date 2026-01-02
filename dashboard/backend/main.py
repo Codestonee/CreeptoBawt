@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 import os
+from pathlib import Path
 
 from dashboard.backend.routers import balances, positions, orders, trades, pnl, system
 from dashboard.backend.websocket.manager import WebSocketManager
@@ -64,9 +65,10 @@ async def health_check():
 
 
 # Mount static files if they exist (for production)
-static_path = os.path.join(os.path.dirname(__file__), "..", "..", "static")
-if os.path.exists(static_path):
-    app.mount("/", StaticFiles(directory=static_path, html=True), name="static")
+# Look for static directory relative to this file's location
+static_path = Path(__file__).parent.parent.parent / "static"
+if static_path.exists():
+    app.mount("/", StaticFiles(directory=str(static_path), html=True), name="static")
 
 
 def main():

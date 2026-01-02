@@ -17,6 +17,9 @@ import { toggleKillSwitch, getSystemStatus } from '../api/system';
 import { formatCurrency, formatPercent } from '../utils/formatters';
 import { REFRESH_INTERVAL } from '../utils/constants';
 
+// Constants
+const MAX_RECENT_TRADES = 5;
+
 export const Dashboard: React.FC = () => {
   const queryClient = useQueryClient();
 
@@ -138,7 +141,7 @@ export const Dashboard: React.FC = () => {
       <OrdersTable orders={orders.orders} onCancelOrder={handleCancelOrder} />
 
       {/* Recent Trades */}
-      <TradesTable trades={trades.trades.slice(0, 5)} />
+      <TradesTable trades={trades.trades.slice(0, MAX_RECENT_TRADES)} />
     </div>
   );
 };
