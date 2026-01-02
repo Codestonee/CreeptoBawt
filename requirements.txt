@@ -1,62 +1,90 @@
-# Core
-uvloop>=0.19.0
-asyncio-throttle>=1.0.2
+# Crypto Trading System - Production Dependencies
+# Python 3.11+ Required
 
-# Web/Async
-aiohttp>=3.9.0
-websockets>=12.0
-aiofiles>=23.2.1
+# =============================================================================
+# CORE ASYNC & PERFORMANCE
+# =============================================================================
+# uvloop - Linux/macOS only (provides 2-4x faster event loop)
+uvloop>=0.19.0; sys_platform != 'win32'
+# winloop - Windows alternative for faster event loop
+winloop>=0.1.1; sys_platform == 'win32'
+aiohttp>=3.9.0                    # Async HTTP client/server
+websockets>=12.0                  # WebSocket client
 
-# Exchange connectivity
-ccxt>=4.2.0
+# =============================================================================
+# EXCHANGE CONNECTIVITY (CEX)
+# =============================================================================
+ccxt>=4.2.0                       # Unified exchange API (50+ exchanges)
+python-binance>=1.0.19            # Binance-specific optimizations
+coinbase-advanced-py>=1.2.0       # Coinbase Advanced Trade API
 
-# Data validation & serialization
-pydantic>=2.5.0
-pydantic-settings>=2.1.0
-dataclasses-json>=0.6.3
+# =============================================================================
+# BLOCKCHAIN & DEX
+# =============================================================================
+web3>=6.15.0                      # Ethereum/EVM connectivity
+eth-account>=0.10.0               # Account & signing
+eth-abi>=5.0.0                    # ABI encoding/decoding
+# flashbots>=1.3.0                # MEV protection (install separately)
 
-# Database
-asyncpg>=0.29.0
-sqlalchemy[asyncio]>=2.0.25
-redis>=5.0.1
-alembic>=1.13.1
+# =============================================================================
+# DATA STRUCTURES & VALIDATION
+# =============================================================================
+pydantic>=2.5.0                   # Data validation & settings
+msgpack>=1.0.7                    # Fast binary serialization
+orjson>=3.9.10                    # Fast JSON parsing
 
-# Math/Stats
-numpy>=1.26.3
-pandas>=2.1.4
-scipy>=1.11.4
+# =============================================================================
+# DATABASE & CACHING
+# =============================================================================
+redis>=5.0.1                      # Event bus & hot cache
+aioredis>=2.0.1                   # Async Redis client
+asyncpg>=0.29.0                   # Async PostgreSQL
+sqlalchemy[asyncio]>=2.0.25       # ORM with async support
 
-# Security
-keyring>=24.3.0
-cryptography>=41.0.7
+# =============================================================================
+# MATH & STATISTICS
+# =============================================================================
+numpy>=1.26.3                     # Numerical computing
+scipy>=1.11.4                     # Scientific computing
+pandas>=2.1.4                     # Data analysis
+networkx>=3.2.1                   # Graph algorithms (Bellman-Ford)
 
-# Monitoring & Logging
-prometheus-client>=0.19.0
-structlog>=23.3.0
-python-json-logger>=2.0.7
+# =============================================================================
+# SECURITY
+# =============================================================================
+keyring>=24.3.0                   # OS-native secret storage
+cryptography>=41.0.7              # Encryption primitives
+python-dotenv>=1.0.0              # Env file loading (dev only)
 
-# Notifications
-python-telegram-bot>=20.7
-aiohttp>=3.9.0
+# =============================================================================
+# MONITORING & LOGGING
+# =============================================================================
+prometheus-client>=0.19.0         # Metrics exposition
+structlog>=23.3.0                 # Structured logging
+opentelemetry-api>=1.22.0         # Distributed tracing
+opentelemetry-sdk>=1.22.0         # Tracing SDK
 
-# Configuration
-pyyaml>=6.0.1
-python-dotenv>=1.0.0
-tomli>=2.0.1
+# =============================================================================
+# NOTIFICATIONS
+# =============================================================================
+python-telegram-bot>=20.7         # Telegram bot
+discord-webhook>=1.3.0            # Discord alerts
+httpx>=0.26.0                     # Modern HTTP client
 
-# Testing
-pytest>=7.4.4
-pytest-asyncio>=0.23.3
-pytest-cov>=4.1.0
-pytest-mock>=3.12.0
-hypothesis>=6.92.1
+# =============================================================================
+# TESTING & DEVELOPMENT
+# =============================================================================
+pytest>=7.4.4                     # Testing framework
+pytest-asyncio>=0.23.3            # Async test support
+pytest-cov>=4.1.0                 # Coverage reporting
+hypothesis>=6.92.1                # Property-based testing
 
-# Development
-black>=23.12.1
-isort>=5.13.2
-mypy>=1.8.0
-ruff>=0.1.9
-
-# Type stubs
-types-redis>=4.6.0
-types-PyYAML>=6.0.12
+# =============================================================================
+# UTILITIES
+# =============================================================================
+python-dateutil>=2.8.2            # Date parsing
+pytz>=2023.3                      # Timezone handling
+tenacity>=8.2.3                   # Retry logic
+click>=8.1.7                      # CLI framework
+rich>=13.7.0                      # Beautiful terminal output
+pyyaml>=6.0.1                     # YAML config parsing

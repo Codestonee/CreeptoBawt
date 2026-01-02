@@ -1,26 +1,38 @@
-# 🚀 CreeptoBawt - Autonomous Crypto Trading System
+# Autonomous Crypto Trading System
 
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+**Institutional-grade autonomous crypto trading system** built on the Five Pillars:
 
-An institutional-grade autonomous cryptocurrency trading system designed for production deployment. Built with resilience, security, and performance as core principles.
+1. 🛡️ **Execution Resilience** - Fault tolerance over strategy elegance
+2. ⚡ **Event-Driven** - WebSocket-first, async everywhere
+3. 📊 **Math-First** - Statistical models drive decisions
+4. 🔐 **Zero-Trust Security** - OS keyring, never .env files
+5. 📈 **Observable & Killable** - Prometheus metrics, kill switches
 
-## ⚠️ Disclaimer
+## Quick Start
 
-**This software is for educational and research purposes only. Trading cryptocurrencies carries significant risk. Never trade with money you cannot afford to lose. The authors are not responsible for any financial losses incurred through the use of this software.**
+```bash
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # or `venv\Scripts\activate` on Windows
 
-## 🏗️ Architecture
+# Install dependencies
+pip install -r requirements.txt
+
+# Run in paper trading mode
+python -m core.engine
+```
+
+## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    CONTROL PLANE                            │
-│  Telegram Bot │ Web UI │ Emergency SSH Access               │
+│  Health Check HTTP | Telegram Bot | Prometheus Metrics      │
 └─────────────────────────────────────────────────────────────┘
                           ↓
 ┌─────────────────────────────────────────────────────────────┐
 │                  ORCHESTRATION LAYER                         │
-│  State Machine │ Mode Controller │ Health Checker            │
+│  Event Bus (Redis) | Mode Controller | Risk Guardian         │
 │  (Live/Paper/Shadow/Replay/Emergency-Stop)                   │
 └─────────────────────────────────────────────────────────────┘
                           ↓
@@ -28,239 +40,157 @@ An institutional-grade autonomous cryptocurrency trading system designed for pro
 │   STRATEGY   │   RISK ENGINE    │   REGIME DETECTOR        │
 │   PLUGINS    │                  │                          │
 ├──────────────┤  - Kill Switches │  - Volatility Regime     │
-│ - Market Maker  - Drawdown Limits  - Trend Detection       │
-│ - Arbitrage  │  - Inventory Caps│  - Liquidity Regime      │
-│ - Stat Arb   │  - Rate Limits   │  - Correlation Breaks    │
+│ - Market Maker  - Drawdown Limits │- Trend Detection       │
+│ - Arbitrage    - Inventory Caps │  - Liquidity Monitoring  │
+│ - Custom       - Rate Limits    │                          │
 └──────────────┴──────────────────┴──────────────────────────┘
                           ↓
-┌─────────────────────────────────────────────────────────────┐
-│              EXECUTION & ORDER MANAGEMENT                    │
-│  Lifecycle FSM │ Smart Routing │ Slippage Controls          │
-└─────────────────────────────────────────────────────────────┘
-                          ↓
 ┌────────────────────┬────────────────────────────────────────┐
-│  CEX CONNECTIVITY  │        STATE & PERSISTENCE             │
+│  CEX CONNECTORS    │        DEX CONNECTORS                  │
 ├────────────────────┤────────────────────────────────────────┤
-│ - Binance WS/REST  │ - TimescaleDB (tick data)              │
-│ - Coinbase WS/REST │ - Redis (event bus, cache)             │
-│ - Unified CCXT     │ - State Reconciliation                 │
+│ - Binance WS       │ - Uniswap V3 (sqrtPriceX96)           │
+│ - Coinbase WS      │ - Multicall batching                   │
+│ - Bybit/OKX/KuCoin │ - Local Geth/Erigon IPC               │
+│ - MEXC/Gate/Bitget │                                        │
 └────────────────────┴────────────────────────────────────────┘
 ```
 
-## ✨ Features
+## Project Structure
 
-### Core Capabilities
-- **Event-Driven Architecture** - WebSocket-first, async I/O with uvloop
-- **Multiple Trading Strategies** - Market making, arbitrage, statistical arbitrage
-- **Production Risk Management** - Kill switches, circuit breakers, position limits
-- **State Reconciliation** - Automatic sync with exchange state
-- **Crash Recovery** - Write-ahead logging for operation recovery
+```
+crypto-trading-system/
+├── config/                 # Environment configurations
+│   └── environments.py     # Dev/Staging/Prod settings
+├── core/                   # Core engine & events
+│   ├── engine.py          # Main event loop (uvloop)
+│   ├── events.py          # Type-safe event dataclasses
+│   ├── event_bus.py       # Redis/in-memory pub/sub
+│   └── mode_controller.py # Trading mode state machine
+├── connectors/            # Exchange connectors
+│   ├── base.py            # Abstract connector interface
+│   ├── binance_ws.py      # Binance WebSocket
+│   ├── coinbase_ws.py     # Coinbase Advanced Trade
+│   ├── ccxt_connector.py  # Multi-exchange via CCXT
+│   └── uniswap_v3.py      # Direct on-chain DEX
+├── strategies/            # Trading strategies
+│   ├── base.py            # Strategy interface
+│   └── market_maker.py    # Avellaneda-Stoikov MM
+├── execution/             # Order management
+│   └── paper_exchange.py  # Paper trading simulation
+├── risk/                  # Risk management
+│   └── guardian.py        # Kill switches & limits
+├── utils/                 # Utilities
+│   ├── security.py        # OS keyring integration
+│   ├── metrics.py         # Prometheus metrics
+│   └── logging_config.py  # Structured logging
+├── monitoring/            # Observability
+│   └── health_check.py    # HTTP health endpoint
+└── tests/                 # Test suite
+```
+
+## Key Features
+
+### Exchange Support
+
+| CEX | Status | Features |
+|-----|--------|----------|
+| Binance | ✅ | WebSocket trades/depth, testnet |
+| Coinbase | ✅ | Advanced Trade API |
+| Bybit | ✅ | Via CCXT |
+| OKX | ✅ | Via CCXT |
+| KuCoin | ✅ | Via CCXT |
+| MEXC | ✅ | Via CCXT |
+| Gate.io | ✅ | Via CCXT |
+| Bitget | ✅ | Via CCXT |
+
+| DEX | Status | Features |
+|-----|--------|----------|
+| Uniswap V3 | ✅ | On-chain price feeds, Multicall |
+
+### Risk Controls
+
+- **Kill Switches**: Manual & automatic activation
+- **Daily Loss Limits**: Configurable per environment
+- **Drawdown Limits**: Rolling max drawdown monitoring
+- **Inventory Limits**: Per-symbol position caps
+- **Rate Limiting**: Order submission throttling
+- **Fat Finger Protection**: Max order size checks
 
 ### Trading Modes
-- **Live** - Real money trading (use with extreme caution)
-- **Paper** - Simulated execution with live market data
-- **Shadow** - Dual execution logging for validation
-- **Replay** - Historical data backtesting
 
-### Security
-- **OS Keyring Integration** - Never store secrets in .env files
-- **Encrypted Credentials** - At-rest encryption for API keys
-- **Principle of Least Privilege** - Minimal API permissions
+| Mode | Description |
+|------|-------------|
+| `LIVE` | Real orders, real money |
+| `PAPER` | Simulated fills, real data |
+| `SHADOW` | Both real and simulated |
+| `REPLAY` | Historical data playback |
+| `EMERGENCY_STOP` | All trading halted |
 
-### Monitoring
-- **Prometheus Metrics** - Real-time performance metrics
-- **Grafana Dashboards** - Visual monitoring
-- **Telegram/Discord Alerts** - Multi-channel notifications
-- **Health Check Endpoints** - Kubernetes-ready
+## Configuration
 
-## 🚀 Quick Start
-
-### Prerequisites
-- Python 3.11+
-- Docker & Docker Compose
-- Redis
-- PostgreSQL/TimescaleDB (optional, for production)
-
-### Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/Codestonee/CreeptoBawt.git
-cd CreeptoBawt
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Store API credentials securely
-python scripts/setup_secrets.py
-
-# Run in paper trading mode
-python -m core.engine --mode paper
-```
-
-### Docker Deployment
-
-```bash
-# Start all services
-docker-compose up -d
-
-# View logs
-docker-compose logs -f trading-bot
-
-# Stop services
-docker-compose down
-```
-
-## 📁 Project Structure
-
-```
-CreeptoBawt/
-├── config/                 # Configuration management
-├── core/                   # Event loop, event bus, mode controller
-├── connectors/             # Exchange WebSocket/REST connectors
-├── strategies/             # Trading strategy implementations
-├── execution/              # Order management, paper exchange
-├── risk/                   # Risk guardian, circuit breakers
-├── reconciliation/         # State sync, crash recovery
-├── pnl/                    # P&L tracking, attribution
-├── database/               # Database models and clients
-├── utils/                  # Security, logging, metrics
-├── monitoring/             # Health checks, notifications
-├── tests/                  # Unit and integration tests
-├── scripts/                # Setup and utility scripts
-├── grafana/                # Dashboard configurations
-├── Dockerfile              # Container build
-├── docker-compose.yml      # Full stack deployment
-└── requirements.txt        # Python dependencies
-```
-
-## ⚙️ Configuration
-
-### Environment Variables
-
-Copy `.env.example` to `.env` and configure:
-
-```bash
-# Trading Mode
-TRADING_MODE=paper  # paper, live, shadow, replay
-
-# Exchange Selection
-EXCHANGES=binance,coinbase
-
-# Risk Limits
-MAX_DAILY_LOSS_USD=5000
-MAX_DRAWDOWN_PCT=0.15
-MAX_INVENTORY_BTC=5.0
-
-# Database
+```python
+# Environment variables
+ENVIRONMENT=development|staging|production
 REDIS_URL=redis://localhost:6379
-POSTGRES_URL=postgresql://localhost/trading
-
-# Monitoring
-TELEGRAM_BOT_TOKEN=your_token
-TELEGRAM_CHAT_ID=your_chat_id
+DATABASE_URL=postgresql://localhost:5432/trading
+TELEGRAM_TOKEN=your_bot_token
+DISCORD_WEBHOOK_URL=your_webhook_url
 ```
 
-### Strategy Configuration
+## Store API Credentials
 
-Edit `config/strategies.yaml`:
+```python
+from utils.security import store_credentials
 
-```yaml
-market_maker:
-  enabled: true
-  symbols:
-    - BTC-USDT
-    - ETH-USDT
-  risk_aversion: 0.5
-  inventory_target: 0
-  max_inventory: 5.0
-
-arbitrage:
-  enabled: false
-  min_profit_bps: 50
-  max_leg_size_usd: 10000
+# Credentials stored in OS keyring (never plain text)
+store_credentials(
+    exchange="binance",
+    api_key="your_api_key",
+    api_secret="your_api_secret",
+)
 ```
 
-## 🛡️ Risk Management
-
-### Kill Switches
-
-The system includes multiple layers of protection:
-
-1. **Daily Loss Limit** - Halt trading if daily losses exceed threshold
-2. **Drawdown Limit** - Stop if portfolio drawdown exceeds limit
-3. **Inventory Limits** - Prevent excessive position accumulation
-4. **API Error Rate** - Halt on repeated exchange errors
-5. **Manual Override** - Telegram /stop command
-
-### Circuit Breakers
-
-- **Volatility Regime** - Widen spreads or halt in extreme volatility
-- **Trend Detection** - Disable market making in strong trends
-- **Liquidity Detection** - Reduce size in thin markets
-
-## 📊 Monitoring
-
-### Telegram Commands
-
-- `/status` - Current system status
-- `/pnl` - P&L report
-- `/positions` - Open positions
-- `/stop` - Emergency stop (kill switch)
-- `/start` - Resume trading
-
-### Grafana Dashboards
-
-Access at `http://localhost:3000`:
-- Trading Performance
-- Risk Metrics
-- System Health
-
-## 🧪 Testing
+## Run Tests
 
 ```bash
 # Run all tests
-pytest
+pytest tests/ -v
 
 # Run with coverage
-pytest --cov=. --cov-report=html
-
-# Run specific test file
-pytest tests/unit/test_risk_guardian.py
-
-# Run integration tests
-pytest tests/integration/ -v
+pytest tests/ --cov=core --cov=connectors --cov=strategies
 ```
 
-## 📈 Performance Targets
+## Health Endpoints
 
-- **Uptime**: >99.9%
-- **Order Latency**: <100ms (p95)
-- **Event Processing**: >1000 events/second
-- **State Reconciliation**: <0.1% discrepancy rate
+- `GET /health` - Full system health JSON
+- `GET /metrics` - Prometheus metrics
+- `GET /ready` - Kubernetes readiness probe
+- `GET /live` - Kubernetes liveness probe
 
-## 🤝 Contributing
+## Development Roadmap
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit changes (`git commit -m 'Add amazing feature'`)
-4. Push to branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+### Phase 1: Foundation ✅
+- Core event system with uvloop
+- CEX/DEX connectors
+- Paper trading exchange
+- Risk guardian with kill switches
+- Prometheus metrics & health checks
 
-## 📜 License
+### Phase 2: Advanced Strategies
+- Bellman-Ford graph arbitrage
+- Statistical arbitrage (pairs trading)
+- Trend following indicators
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+### Phase 3: Production Hardening
+- Docker deployment
+- TimescaleDB integration
+- Grafana dashboards
+- Telegram bot interface
 
-## 🙏 Acknowledgments
+## License
 
-- [CCXT](https://github.com/ccxt/ccxt) - Exchange connectivity
-- [Freqtrade](https://github.com/freqtrade/freqtrade) - Inspiration for bot architecture
-- [Hummingbot](https://github.com/hummingbot/hummingbot) - Market making concepts
+MIT License - Use at your own risk. This is trading software - bugs cost money.
 
----
+## Disclaimer
 
-**Remember: Always start with paper trading and thoroughly validate before considering live trading.**
+⚠️ **This software is for educational purposes. Trading cryptocurrency involves significant risk of loss. Always start with paper trading and small amounts. The authors are not responsible for any financial losses.**
