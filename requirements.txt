@@ -24,7 +24,7 @@ coinbase-advanced-py>=1.2.0       # Coinbase Advanced Trade API
 web3>=6.15.0                      # Ethereum/EVM connectivity
 eth-account>=0.10.0               # Account & signing
 eth-abi>=5.0.0                    # ABI encoding/decoding
-# flashbots>=1.3.0                # MEV protection (install separately)
+flashbots>=1.3.0                  # MEV protection
 
 # =============================================================================
 # DATA STRUCTURES & VALIDATION
