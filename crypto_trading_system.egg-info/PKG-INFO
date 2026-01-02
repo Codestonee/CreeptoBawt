@@ -1,0 +1,218 @@
+Metadata-Version: 2.4
+Name: crypto-trading-system
+Version: 0.1.0
+Summary: Institutional-grade autonomous crypto trading system
+Author-email: Trading Bot <bot@example.com>
+License: MIT
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Financial and Insurance Industry
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: Office/Business :: Financial :: Investment
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Provides-Extra: dev
+Requires-Dist: pytest>=7.4.4; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.23.3; extra == "dev"
+Requires-Dist: pytest-cov>=4.1.0; extra == "dev"
+Requires-Dist: black>=23.12.1; extra == "dev"
+Requires-Dist: ruff>=0.1.9; extra == "dev"
+Requires-Dist: mypy>=1.8.0; extra == "dev"
+
+# Autonomous Crypto Trading System
+
+**Institutional-grade autonomous crypto trading system** built on the Five Pillars:
+
+1. 🛡️ **Execution Resilience** - Fault tolerance over strategy elegance
+2. ⚡ **Event-Driven** - WebSocket-first, async everywhere
+3. 📊 **Math-First** - Statistical models drive decisions
+4. 🔐 **Zero-Trust Security** - OS keyring, never .env files
+5. 📈 **Observable & Killable** - Prometheus metrics, kill switches
+
+## Quick Start
+
+```bash
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # or `venv\Scripts\activate` on Windows
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Run in paper trading mode
+python -m core.engine
+```
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    CONTROL PLANE                            │
+│  Health Check HTTP | Telegram Bot | Prometheus Metrics      │
+└─────────────────────────────────────────────────────────────┘
+                          ↓
+┌─────────────────────────────────────────────────────────────┐
+│                  ORCHESTRATION LAYER                         │
+│  Event Bus (Redis) | Mode Controller | Risk Guardian         │
+│  (Live/Paper/Shadow/Replay/Emergency-Stop)                   │
+└─────────────────────────────────────────────────────────────┘
+                          ↓
+┌──────────────┬──────────────────┬──────────────────────────┐
+│   STRATEGY   │   RISK ENGINE    │   REGIME DETECTOR        │
+│   PLUGINS    │                  │                          │
+├──────────────┤  - Kill Switches │  - Volatility Regime     │
+│ - Market Maker  - Drawdown Limits │- Trend Detection       │
+│ - Arbitrage    - Inventory Caps │  - Liquidity Monitoring  │
+│ - Custom       - Rate Limits    │                          │
+└──────────────┴──────────────────┴──────────────────────────┘
+                          ↓
+┌────────────────────┬────────────────────────────────────────┐
+│  CEX CONNECTORS    │        DEX CONNECTORS                  │
+├────────────────────┤────────────────────────────────────────┤
+│ - Binance WS       │ - Uniswap V3 (sqrtPriceX96)           │
+│ - Coinbase WS      │ - Multicall batching                   │
+│ - Bybit/OKX/KuCoin │ - Local Geth/Erigon IPC               │
+│ - MEXC/Gate/Bitget │                                        │
+└────────────────────┴────────────────────────────────────────┘
+```
+
+## Project Structure
+
+```
+crypto-trading-system/
+├── config/                 # Environment configurations
+│   └── environments.py     # Dev/Staging/Prod settings
+├── core/                   # Core engine & events
+│   ├── engine.py          # Main event loop (uvloop)
+│   ├── events.py          # Type-safe event dataclasses
+│   ├── event_bus.py       # Redis/in-memory pub/sub
+│   └── mode_controller.py # Trading mode state machine
+├── connectors/            # Exchange connectors
+│   ├── base.py            # Abstract connector interface
+│   ├── binance_ws.py      # Binance WebSocket
+│   ├── coinbase_ws.py     # Coinbase Advanced Trade
+│   ├── ccxt_connector.py  # Multi-exchange via CCXT
+│   └── uniswap_v3.py      # Direct on-chain DEX
+├── strategies/            # Trading strategies
+│   ├── base.py            # Strategy interface
+│   └── market_maker.py    # Avellaneda-Stoikov MM
+├── execution/             # Order management
+│   └── paper_exchange.py  # Paper trading simulation
+├── risk/                  # Risk management
+│   └── guardian.py        # Kill switches & limits
+├── utils/                 # Utilities
+│   ├── security.py        # OS keyring integration
+│   ├── metrics.py         # Prometheus metrics
+│   └── logging_config.py  # Structured logging
+├── monitoring/            # Observability
+│   └── health_check.py    # HTTP health endpoint
+└── tests/                 # Test suite
+```
+
+## Key Features
+
+### Exchange Support
+
+| CEX | Status | Features |
+|-----|--------|----------|
+| Binance | ✅ | WebSocket trades/depth, testnet |
+| Coinbase | ✅ | Advanced Trade API |
+| Bybit | ✅ | Via CCXT |
+| OKX | ✅ | Via CCXT |
+| KuCoin | ✅ | Via CCXT |
+| MEXC | ✅ | Via CCXT |
+| Gate.io | ✅ | Via CCXT |
+| Bitget | ✅ | Via CCXT |
+
+| DEX | Status | Features |
+|-----|--------|----------|
+| Uniswap V3 | ✅ | On-chain price feeds, Multicall |
+
+### Risk Controls
+
+- **Kill Switches**: Manual & automatic activation
+- **Daily Loss Limits**: Configurable per environment
+- **Drawdown Limits**: Rolling max drawdown monitoring
+- **Inventory Limits**: Per-symbol position caps
+- **Rate Limiting**: Order submission throttling
+- **Fat Finger Protection**: Max order size checks
+
+### Trading Modes
+
+| Mode | Description |
+|------|-------------|
+| `LIVE` | Real orders, real money |
+| `PAPER` | Simulated fills, real data |
+| `SHADOW` | Both real and simulated |
+| `REPLAY` | Historical data playback |
+| `EMERGENCY_STOP` | All trading halted |
+
+## Configuration
+
+```python
+# Environment variables
+ENVIRONMENT=development|staging|production
+REDIS_URL=redis://localhost:6379
+DATABASE_URL=postgresql://localhost:5432/trading
+TELEGRAM_TOKEN=your_bot_token
+DISCORD_WEBHOOK_URL=your_webhook_url
+```
+
+## Store API Credentials
+
+```python
+from utils.security import store_credentials
+
+# Credentials stored in OS keyring (never plain text)
+store_credentials(
+    exchange="binance",
+    api_key="your_api_key",
+    api_secret="your_api_secret",
+)
+```
+
+## Run Tests
+
+```bash
+# Run all tests
+pytest tests/ -v
+
+# Run with coverage
+pytest tests/ --cov=core --cov=connectors --cov=strategies
+```
+
+## Health Endpoints
+
+- `GET /health` - Full system health JSON
+- `GET /metrics` - Prometheus metrics
+- `GET /ready` - Kubernetes readiness probe
+- `GET /live` - Kubernetes liveness probe
+
+## Development Roadmap
+
+### Phase 1: Foundation ✅
+- Core event system with uvloop
+- CEX/DEX connectors
+- Paper trading exchange
+- Risk guardian with kill switches
+- Prometheus metrics & health checks
+
+### Phase 2: Advanced Strategies
+- Bellman-Ford graph arbitrage
+- Statistical arbitrage (pairs trading)
+- Trend following indicators
+
+### Phase 3: Production Hardening
+- Docker deployment
+- TimescaleDB integration
+- Grafana dashboards
+- Telegram bot interface
+
+## License
+
+MIT License - Use at your own risk. This is trading software - bugs cost money.
+
+## Disclaimer
+
+⚠️ **This software is for educational purposes. Trading cryptocurrency involves significant risk of loss. Always start with paper trading and small amounts. The authors are not responsible for any financial losses.**
