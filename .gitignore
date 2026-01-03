@@ -43,3 +43,12 @@ Thumbs.db
 *.pem
 credentials.json
 api_keys.json
+
+# Dashboard frontend
+dashboard/frontend/node_modules/
+dashboard/frontend/dist/
+dashboard/frontend/.vite/
+dashboard/frontend/package-lock.json
+
+# Dashboard static files
+dashboard/static/
