@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from typing import Optional
 
 # Events
-from core.events import MarketEvent, SignalEvent, RegimeEvent, FillEvent
+from core.events import MarketEvent, SignalEvent, RegimeEvent, FillEvent, FundingRateEvent
 
 # Modules
 from analysis.regime_supervisor import RegimeSupervisor
@@ -227,6 +227,8 @@ class TradingEngine:
                     await self._handle_regime_change(event)
                 elif isinstance(event, FillEvent):
                     await self._handle_fill(event)
+                elif isinstance(event, FundingRateEvent):
+                    await self._handle_funding_rate(event)
                 
                 self.event_queue.task_done()
 
@@ -343,3 +345,9 @@ class TradingEngine:
                 await executor.close()
         
         logger.info("Engine stopped.")
+
+    async def _handle_funding_rate(self, event: FundingRateEvent):
+        """Pass funding rate updates to interested strategies."""
+        for strategy in self.strategies:
+            if hasattr(strategy, 'on_funding_rate'):
+                await strategy.on_funding_rate(event)

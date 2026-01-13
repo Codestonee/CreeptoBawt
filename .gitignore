@@ -51,3 +51,6 @@ dashboard_log.txt
 # OS
 .DS_Store
 Thumbs.db
+
+# Runtime State
+strategy_state.json

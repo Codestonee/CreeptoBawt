@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     TRADING_SYMBOLS: list[str] = ["btcusdt", "ethusdt", "solusdt", "dogeusdt", "xrpusdt", "bnbusdt", "adausdt", "ltcusdt"]
 
     # Paper Trading Config
-    PAPER_TRADING: bool = False       # True = Låtsaspengar, False = Riktiga pengar
+    PAPER_TRADING: bool = True       # True = Låtsaspengar, False = Riktiga pengar
     INITIAL_CAPITAL: float = 500.0  # Startkapital för simulering
 
     # Strategy Config

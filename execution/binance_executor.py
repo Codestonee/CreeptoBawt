@@ -298,6 +298,7 @@ class BinanceExecutionHandler:
         
         symbol = signal.symbol.upper()
         side = signal.side.upper()
+        is_spot = (getattr(signal, 'exchange', '') == 'binance_spot')
         
         tick_size, step_size = self._get_filters(symbol)
         
@@ -340,6 +341,13 @@ class BinanceExecutionHandler:
         
         for attempt in range(max_retries):
             try:
+                # --- SPOT EXECUTION ---
+                if is_spot:
+                    await self._execute_spot_order(
+                        symbol, side, quantity, price, order_type, order.client_order_id
+                    )
+                    return order.client_order_id
+
                 if order_type == 'MARKET':
                     # MARKET order - immediate fill at best price (emergency closes only)
                     logger.warning(f"⚡ MARKET ORDER: {side} {quantity} {symbol}")
@@ -680,6 +688,48 @@ class BinanceExecutionHandler:
         
         logger.info("Execution handler closed.")
     
-    async def on_tick(self, event):
-        """Handle tick events (for compatibility)."""
-        pass
+    async def _execute_spot_order(self, symbol, side, quantity, price, order_type, client_order_id):
+        """Execute a REAL Spot order."""
+        if order_type == 'MARKET':
+            return await self.client.create_order(
+                symbol=symbol,
+                side=side,
+                type='MARKET',
+                quantity=quantity,
+                newClientOrderId=client_order_id,
+                recvWindow=self.nonce_service.get_recv_window()
+            )
+        else:
+            return await self.client.create_order(
+                symbol=symbol,
+                side=side,
+                type='LIMIT',
+                timeInForce='GTC',
+                quantity=quantity,
+                price=price,
+                newClientOrderId=client_order_id,
+                recvWindow=self.nonce_service.get_recv_window()
+            )
+
+    async def _execute_futures_order(self, symbol, side, quantity, price, order_type, client_order_id):
+        """Execute a REAL Futures order."""
+        if order_type == 'MARKET':
+            return await self.client.futures_create_order(
+                symbol=symbol,
+                side=side,
+                type='MARKET',
+                quantity=quantity,
+                newClientOrderId=client_order_id,
+                recvWindow=self.nonce_service.get_recv_window()
+            )
+        else:
+            return await self.client.futures_create_order(
+                symbol=symbol,
+                side=side,
+                type='LIMIT',
+                timeInForce='GTC',
+                quantity=quantity,
+                price=price,
+                newClientOrderId=client_order_id,
+                recvWindow=self.nonce_service.get_recv_window()
+            )

@@ -13,7 +13,7 @@ except ImportError:
     def json_loads(data):
         return json.loads(data)
 
-from core.events import MarketEvent
+from core.events import MarketEvent, FundingRateEvent
 
 logger = logging.getLogger("Connector.Binance")
 
@@ -49,14 +49,18 @@ class BinanceFuturesConnector:
                 await asyncio.sleep(5)
 
     async def _subscribe(self):
-        """Prenumererar på aggregerade trades för valda symboler."""
+        """Prenumererar på aggregerade trades OCH mark price (funding)."""
         if not self.ws:
             return
             
-        params = [f"{s}@aggTrade" for s in self.symbols]
+        # aggTrade för exekvering
+        agg_params = [f"{s}@aggTrade" for s in self.symbols]
+        # markPrice för funding rate (1s update speed för real-time rate)
+        mark_params = [f"{s}@markPrice@1s" for s in self.symbols]
+        
         payload = {
             "method": "SUBSCRIBE",
-            "params": params,
+            "params": agg_params + mark_params,
             "id": 1
         }
         await self.ws.send_json(payload)
@@ -72,11 +76,12 @@ class BinanceFuturesConnector:
                 break
 
     async def _process_message(self, data: dict):
-        """Omvandlar rå JSON till MarketEvent."""
+        """Omvandlar rå JSON till MarketEvent eller FundingRateEvent."""
         # Ignorera heartbeat/response meddelanden
         if 'e' not in data:
             return
 
+        # 1. Trade Update
         if data['e'] == 'aggTrade':
             event = MarketEvent(
                 exchange='binance_futures',
@@ -86,7 +91,19 @@ class BinanceFuturesConnector:
                 timestamp=float(data['T']) / 1000,
                 event_type='TICK'
             )
-            # Lägg eventet i kön för motorn att bearbeta
+            await self.queue.put(event)
+            
+        # 2. Mark Price Update (Funding Rate)
+        elif data['e'] == 'markPriceUpdate':
+            # "r": Funding Rate
+            # "p": Mark Price
+            # "T": Next Funding Time
+            event = FundingRateEvent(
+                symbol=data['s'],
+                rate=float(data['r']),
+                mark_price=float(data['p']),
+                next_funding_time=float(data['T']) / 1000
+            )
             await self.queue.put(event)
 
     async def close(self):

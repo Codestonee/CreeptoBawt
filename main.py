@@ -30,11 +30,12 @@ from config.settings import settings
 from core.engine import TradingEngine
 from connectors.binance_futures import BinanceFuturesConnector
 from strategies.avellaneda_stoikov import AvellanedaStoikovStrategy
+from strategies.funding_arb import FundingArbStrategy
 # NEW: Import ShadowBook for L2 order book data
 from data.shadow_book import get_shadow_book
 # NEW: Import HMM Regime Detector (replaces ADX-based detection)
 from analysis.hmm_regime_detector import RegimeSupervisorHMM
-from strategies.funding_arb import FundingRateMonitor, CarryTradeManager, run_funding_arb_loop
+# from strategies.funding_arb import FundingRateMonitor, CarryTradeManager, run_funding_arb_loop  <-- Removed
 # NEW: Telegram Alerts for remote monitoring
 from utils.telegram_alerts import get_telegram_alerter
 
@@ -348,11 +349,10 @@ def main():
         loop.create_task(shadow_book.start())
         logger.info("📈 Shadow Order Book WebSocket started")
         
-        # Start Funding Arbitrage Loop (background task)
-        # funding_monitor = FundingRateMonitor()
-        # carry_manager = CarryTradeManager(monitor=funding_monitor)
-        # loop.create_task(run_funding_arb_loop(carry_manager))
-        # logger.info("💰 Funding Arbitrage Loop started")
+        # Start Funding Arbitrage Strategy
+        funding_arb = FundingArbStrategy(event_queue=engine.event_queue)
+        engine.add_strategy(funding_arb)
+        logger.info("💰 Funding Arbitrage Strategy activated")
         
         # Start Circuit Breaker Monitor
         stop_event = asyncio.Event()

@@ -60,3 +60,11 @@ class FillEvent(Event):
     commission_asset: str = "USDT"
     is_maker: bool = False # Taker by default
     pnl: float = 0.0  # Realiserad vinst/förlust (om denna trade stänger en position)
+
+@dataclass(kw_only=True)
+class FundingRateEvent(Event):
+    """Funding Rate uppdatering från Futures."""
+    symbol: str
+    rate: float            # Aktuell funding rate (e.g. 0.0001 = 0.01%)
+    mark_price: float      # Mark price vid tillfället
+    next_funding_time: float # Timestamp för nästa funding betalning
