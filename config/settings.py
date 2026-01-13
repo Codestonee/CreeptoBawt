@@ -64,6 +64,14 @@ class Settings(BaseSettings):
     MAX_POSITION_USD: float = 200.0  # Maximum notional size per position ($200)
     MIN_NOTIONAL_USD: float = 10.0  # Min order value (Binance Spot requires >$10)
     
+    # --------------------------------------------------------------------------
+    # STRICT RISK GATEKEEPER (HARD LIMITS)
+    # --------------------------------------------------------------------------
+    RISK_MAX_POSITION_TOTAL_USD: float = 1000.0  # Max total exposure across ALL pairs
+    RISK_MAX_ORDER_USD: float = 500.0            # Max size of a single order (Fat Finger)
+    RISK_MIN_NOTIONAL_USD: float = 11.0          # $11.0 to safely clear $10.0 min
+    # --------------------------------------------------------------------------
+    
     # Fee Structure (Binance Futures)
     MAKER_FEE_BPS: float = 2.0       # 0.02% maker fee
     TAKER_FEE_BPS: float = 5.0       # 0.05% taker fee

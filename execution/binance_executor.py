@@ -19,6 +19,7 @@ from execution.smart_router import DeterministicOrderRouter
 from utils.nonce_service import get_nonce_service
 from utils.time_sync import get_time_sync_service
 from database.db_manager import DatabaseManager
+from execution.risk_gatekeeper import RiskGatekeeper
 
 logger = logging.getLogger("Execution.Binance")
 
@@ -47,7 +48,9 @@ class BinanceExecutionHandler:
         self.event_store = get_event_store()
         self.nonce_service = get_nonce_service()
         self.time_sync = get_time_sync_service(testnet=testnet)
+        self.time_sync = get_time_sync_service(testnet=testnet)
         self.db = DatabaseManager()
+        self.gatekeeper = RiskGatekeeper()
         
         # Track client_order_id -> trace_id mapping for fills
         self._order_trace_map: Dict[str, str] = {}
@@ -313,6 +316,15 @@ class BinanceExecutionHandler:
         quantity = self._round_step_size(signal.quantity, step_size)
         price = self._round_step_size(signal.price or 0, tick_size) if signal.price else 0
         
+        # --- RISK GATEKEEPER (THE HARD STOP) ---
+        # Note: If price is 0 (Market Order), the value check might be skipped/inaccurate.
+        # Future improvement: Fetch mark price for Market orders.
+        risk_check = await self.gatekeeper.validate_order(symbol, quantity, price, side)
+        if not risk_check.is_allowed:
+            logger.error(f"🛑 RISK REJECT: {risk_check.reason}")
+            return None
+        # ---------------------------------------
+
         # 1. Create order in OrderManager (logs to EventStore)
         try:
             order = await self.order_manager.create_order(
