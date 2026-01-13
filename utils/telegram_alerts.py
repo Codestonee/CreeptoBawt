@@ -1,0 +1,157 @@
+"""
+Telegram Alert Service - Critical notifications for trading bot.
+
+Sends alerts for:
+- Circuit breaker triggered
+- Emergency close executed
+- PnL threshold breach
+- Bot crash/restart
+"""
+
+import asyncio
+import aiohttp
+import logging
+from typing import Optional
+from config.settings import settings
+
+logger = logging.getLogger("Utils.TelegramAlerts")
+
+
+class TelegramAlerter:
+    """
+    Simple async Telegram alerter for critical trading events.
+    
+    Usage:
+        alerter = TelegramAlerter()
+        await alerter.send("🚨 Circuit breaker triggered!")
+    """
+    
+    API_URL = "https://api.telegram.org/bot{token}/sendMessage"
+    
+    def __init__(self, token: Optional[str] = None, chat_id: Optional[str] = None):
+        """
+        Initialize with Telegram bot token and chat ID.
+        
+        Get these by:
+        1. Create a bot via @BotFather -> get token
+        2. Send /start to your bot
+        3. Visit https://api.telegram.org/bot<TOKEN>/getUpdates -> get chat_id
+        """
+        self.token = token or getattr(settings, 'TELEGRAM_BOT_TOKEN', None)
+        self.chat_id = chat_id or getattr(settings, 'TELEGRAM_CHAT_ID', None)
+        self.enabled = bool(self.token and self.chat_id)
+        
+        if self.enabled:
+            logger.info("✅ Telegram alerts enabled")
+        else:
+            logger.debug("Telegram alerts disabled (no token/chat_id configured)")
+    
+    async def send(self, message: str, parse_mode: str = "HTML") -> bool:
+        """
+        Send a message to the configured Telegram chat.
+        
+        Args:
+            message: Text to send (supports HTML formatting)
+            parse_mode: "HTML" or "Markdown"
+            
+        Returns:
+            True if sent successfully, False otherwise
+        """
+        if not self.enabled:
+            logger.debug(f"Telegram (disabled): {message}")
+            return False
+        
+        url = self.API_URL.format(token=self.token)
+        payload = {
+            "chat_id": self.chat_id,
+            "text": message,
+            "parse_mode": parse_mode,
+            "disable_notification": False
+        }
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, timeout=10) as response:
+                    if response.status == 200:
+                        logger.debug(f"Telegram sent: {message[:50]}...")
+                        return True
+                    else:
+                        logger.warning(f"Telegram API error: {response.status}")
+                        return False
+        except asyncio.TimeoutError:
+            logger.warning("Telegram send timed out")
+            return False
+        except Exception as e:
+            logger.warning(f"Telegram send failed: {e}")
+            return False
+    
+    # Convenience methods for common alerts
+    
+    async def alert_circuit_breaker(self, reason: str):
+        """Alert when circuit breaker is triggered."""
+        await self.send(
+            f"🛑 <b>CIRCUIT BREAKER</b>\n\n"
+            f"Trading paused: {reason}\n\n"
+            f"Manual intervention required."
+        )
+    
+    async def alert_emergency_close(self, symbol: str, side: str, qty: float, exchange: str):
+        """Alert when emergency close is executed."""
+        await self.send(
+            f"🚨 <b>EMERGENCY CLOSE</b>\n\n"
+            f"Symbol: {symbol}\n"
+            f"Side: {side}\n"
+            f"Qty: {qty}\n"
+            f"Exchange: {exchange}\n\n"
+            f"Legged position was closed with MARKET order."
+        )
+    
+    async def alert_pnl_breach(self, current_pnl: float, threshold: float):
+        """Alert when PnL drops below threshold."""
+        await self.send(
+            f"⚠️ <b>PnL ALERT</b>\n\n"
+            f"Current PnL: ${current_pnl:+.2f}\n"
+            f"Threshold: ${threshold:.2f}\n\n"
+            f"Review trading activity immediately."
+        )
+    
+    async def alert_bot_started(self):
+        """Alert when bot starts."""
+        mode = "TESTNET" if settings.TESTNET else "⚠️ MAINNET"
+        await self.send(
+            f"✅ <b>BOT STARTED</b>\n\n"
+            f"Mode: {mode}\n"
+            f"Capital: ${settings.INITIAL_CAPITAL:.2f}"
+        )
+    
+    async def alert_bot_stopped(self, reason: str = "Normal shutdown"):
+        """Alert when bot stops."""
+        await self.send(
+            f"🛑 <b>BOT STOPPED</b>\n\n"
+            f"Reason: {reason}"
+        )
+    
+    async def alert_error(self, error: str):
+        """Alert on critical error."""
+        await self.send(
+            f"❌ <b>CRITICAL ERROR</b>\n\n"
+            f"<code>{error[:500]}</code>"
+        )
+
+
+# Global instance
+_alerter: Optional[TelegramAlerter] = None
+
+
+def get_telegram_alerter() -> TelegramAlerter:
+    """Get or create the global Telegram alerter."""
+    global _alerter
+    if _alerter is None:
+        _alerter = TelegramAlerter()
+    return _alerter
+
+
+# Quick send function for one-off alerts
+async def send_telegram_alert(message: str) -> bool:
+    """Quick way to send a Telegram alert."""
+    return await get_telegram_alerter().send(message)
