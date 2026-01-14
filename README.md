@@ -1,84 +1,88 @@
-A high-frequency trading system for cryptocurrency futures markets. Built with Python asyncio for low-latency execution and designed around proper risk management.
-Architecture
-Core Components:
+# Titan HFT Bot 🚀
 
-Event-driven architecture with async execution
-Real-time order book reconstruction (Shadow Book)
-ACID-compliant order state management
-Risk checks on every order before exchange submission
+Hey there! Welcome to **Titan**, a high-frequency trading bot I built for crypto futures. It's designed to be fast, safe, and modular. I started this because I wanted something more robust than the standard "while True" loops you see in most tutorials.
 
-Trading Strategies:
+This bot is fully async, uses a proper event architecture, and includes a real-time dashboard so you can actually see what's going on without staring at logs all day.
 
-Avellaneda-Stoikov market making
-Funding rate arbitrage (experimental)
+## What's Inside?
 
-Market Analysis:
+- **⚡ Async Core:** Built on `asyncio` and `uvloop` for low-latency execution.
+- **🛡️ Risk First:** Has a dedicated `RiskGatekeeper` that validates every single order _before_ it goes to the exchange. It tracks position limits, daily loss, and "fat finger" errors.
+- **🧠 Strategies:**
+  - **Avellaneda-Stoikov:** A classic market-making strategy that quotes around the mid-price.
+  - **Funding Arbitrage:** (In beta) For capturing funding rate discrepancies.
+- **📊 Real-time Dashboard:** A Streamlit app that shows your PnL, active positions, and open orders live.
+- **🐋 Shadow Order Book:** Maintains a local L2 order book for true mid-price calculation (crucial for accurate quoting).
+- **ACID-compliant Order Manager:** Keeps local state perfectly synced with the exchange to prevent "ghost orders."
 
-HMM-based regime detection
-Real-time P&L tracking
-SQLite trade database
+## Getting Started
 
-Quick Start
-Requirements:
+### Prerequisites
 
-Python 3.11 or higher
-Binance Futures API credentials
+You'll need **Python 3.11+**. I highly recommend using a virtual environment.
 
-Setup:
-bash# Clone and enter directory
-git clone https://github.com/yourusername/titan-hft.git
-cd titan-hft
+### Installation
 
-# Install dependencies
-pip install -r requirements.txt
+1.  **Clone the repo:**
 
-# Configure API keys
-cp .env.example .env
-# Edit .env with your Binance testnet credentials
-Run:
-bash# Start trading engine
+    ```bash
+    git clone https://github.com/yourusername/CreeptBaws.git
+    cd CreeptBaws
+    ```
+
+2.  **Install dependencies:**
+
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+3.  **Set up configuration:**
+    Copy the example env file and add your keys.
+    ```bash
+    cp .env.example .env
+    ```
+    _Open `.env` and fill in your Binance API Key and Secret._
+
+### Running the Bot
+
+To start the trading engine (by default it runs on Binance Testnet):
+
+```bash
 python main.py
+```
 
-# Launch dashboard (separate terminal)
+You should see logs starting up, connecting to WebSocket streams, and initializing the strategies.
+
+### Launching the Dashboard
+
+Want to see the pretty charts? Open a new terminal and run:
+
+```bash
 streamlit run dashboard/app.py
-The bot connects to Binance testnet by default. Visit http://localhost:8501 to view the dashboard.
-Configuration
-Key settings in config/settings.py:
+```
 
-TRADING_SYMBOLS: Markets to trade (default: BTCUSDT, ETHUSDT)
-MAX_POSITION_USD: Maximum position size per symbol
-INITIAL_CAPITAL: Starting capital for P&L tracking
-TESTNET: Set to False for live trading (use with caution)
+Then head to `http://localhost:8501` in your browser.
 
-Safety Features
+## Docker Support 🐳
 
-Position checks on startup: Refuses to start if dangerous inherited positions exist
-Circuit breaker: Auto-shutdown if drawdown exceeds 5%
-Order validation: Risk gatekeeper blocks orders that violate limits
-Reconciliation: Continuous sync between local state and exchange
+If you prefer keeping things containerized (or want to run this on a VPS):
 
-Project Structure
-├── config/           # Settings and configuration
-├── core/             # Trading engine and event system
-├── strategies/       # Trading strategy implementations
-├── execution/        # Order management and exchange connectors
-├── data/             # Order book and candle data providers
-├── analysis/         # Market regime detection
-├── dashboard/        # Streamlit monitoring interface
-└── tests/            # Unit and integration tests
-Docker Deployment
-bashdocker-compose up -d
-Includes the trading bot and dashboard. Configure environment variables in .env before building.
-Important Notes
-This is experimental software. Start with testnet. Never trade more than you can afford to lose.
+```bash
+docker-compose up --build -d
+```
 
-Paper trading is enabled by default
-Test thoroughly before using real funds
-Monitor the dashboard during operation
-Check logs in bot_execution.log
+This spins up the bot, the dashboard, and a Redis/Postgres instance if you have them configured.
 
-The circuit breaker will shut down the bot if realized P&L drops 5% below starting capital.
-Development
-Run tests:
-bashpytest
-The codebase uses async/await throughout. On Linux, uvloop is automatically used for better performance.
+## Risk Warning ⚠️
+
+**Please read this:** Trading crypto futures involves significant risk. This bot is a tool, not a money printer.
+
+- Start with **Paper Trading** (enabled by default in `config/settings.py`).
+- Test thoroughly on Testnet before risking real funds.
+- I am not responsible for any blown accounts!
+
+## Contributing
+
+Found a bug? Have an idea for a new strategy? Feel free to open an issue or submit a PR. I'm always looking to optimize the execution speed!
+
+Happy Trading! 📈

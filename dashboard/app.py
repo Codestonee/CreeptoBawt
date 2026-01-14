@@ -49,8 +49,8 @@ if 'panic_armed' not in st.session_state:
 # =============================================================================
 # SIGNAL FILES (Emergency Controls)
 # =============================================================================
-STOP_SIGNAL_FILE = "STOP_SIGNAL"
-PAUSE_SIGNAL_FILE = "PAUSE_SIGNAL"
+STOP_SIGNAL_FILE = "data/STOP_SIGNAL"
+PAUSE_SIGNAL_FILE = "data/PAUSE_SIGNAL"
 
 def send_stop_signal():
     with open(STOP_SIGNAL_FILE, "w") as f:
@@ -76,7 +76,7 @@ def get_signal_status():
 # DATABASE
 # =============================================================================
 def get_db_connection():
-    db_path = 'trading_data.db'
+    db_path = 'data/trading_data.db'
     if os.path.exists(db_path):
         return sqlite3.connect(db_path)
     return None
@@ -599,10 +599,10 @@ def update_center_column(phs, metrics):
     # 3. STRATEGY INTERNALS
     # Since this is complex to update bit-by-bit, we'll redraw the container content
     # using the placeholder.
-    if os.path.exists("strategy_state.json"):
+    if os.path.exists("data/strategy_state.json"):
         try:
             import json
-            with open("strategy_state.json") as f:
+            with open("data/strategy_state.json") as f:
                 full_state = json.load(f)
             
             # Determine which symbol to show
@@ -820,9 +820,9 @@ def update_right_column(phs, metrics):
 
     # 2. EVENT LOG
     log_entries = []
-    if os.path.exists("dashboard_log.txt"):
+    if os.path.exists("logs/dashboard_log.txt"): # Updated path
         try:
-            with open("dashboard_log.txt", "r") as f:
+            with open("logs/dashboard_log.txt", "r") as f:
                 log_entries = f.readlines()[-20:]
         except:
             pass

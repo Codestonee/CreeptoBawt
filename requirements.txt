@@ -6,10 +6,17 @@ python-dotenv>=1.0.0
 python-binance>=1.0.19
 aiosqlite>=0.19.0
 numpy>=1.26.0
+numpy>=1.26.0
 sqlalchemy>=2.0.0
+streamlit>=1.30.0
+plotly>=5.18.0
+hmmlearn>=0.3.0
 
 # New dependencies for production refactoring
 python-json-logger>=2.0.0
 statsd>=4.0.0
 cryptography>=42.0.0
 sortedcontainers>=2.4.0
+psycopg2-binary
+ccxt>=4.0.0
+asyncpg>=0.29.0

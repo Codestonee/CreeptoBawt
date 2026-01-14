@@ -31,6 +31,7 @@ from core.engine import TradingEngine
 from connectors.binance_futures import BinanceFuturesConnector
 from strategies.avellaneda_stoikov import AvellanedaStoikovStrategy
 from strategies.funding_arb import FundingArbStrategy
+from strategies.cross_exchange_arb import CrossExchangeArbStrategy
 # NEW: Import ShadowBook for L2 order book data
 from data.shadow_book import get_shadow_book
 # NEW: Import HMM Regime Detector (replaces ADX-based detection)
@@ -87,15 +88,34 @@ console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setLevel(logging.INFO)
 console_handler.setFormatter(CleanFormatter())
 
+from logging.handlers import RotatingFileHandler
+
 # File handler - detailed format, everything
-file_handler = logging.FileHandler("bot_execution.log", encoding='utf-8')
+# Rotating Log: Max 10MB per file, keep last 5 backups
+# Rotating Log: Max 10MB per file, keep last 5 backups
+file_handler = RotatingFileHandler(
+    "logs/bot_execution.log", 
+    maxBytes=10*1024*1024, # 10MB
+    backupCount=5,
+    encoding='utf-8'
+)
+
+# ...
+
+# Dashboard handler - condensed format for UI
+# Rotating Log: Max 1MB, keep 1 backup (Dashboard only reads last 20 lines)
+dashboard_handler = RotatingFileHandler(
+    "logs/dashboard_log.txt", 
+    maxBytes=1*1024*1024, # 1MB
+    backupCount=1,
+    encoding='utf-8'
+)
 file_handler.setLevel(logging.DEBUG)
 file_handler.setFormatter(logging.Formatter(
     '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 ))
 
-# Dashboard handler - condensed format for UI
-dashboard_handler = logging.FileHandler("dashboard_log.txt", encoding='utf-8')
+
 dashboard_handler.setLevel(logging.INFO)
 dashboard_handler.setFormatter(logging.Formatter(
     '%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S'
@@ -115,64 +135,7 @@ for noisy in ['Execution.Reconciliation', 'Data.ShadowBook', 'Data.CandleProvide
 logger = logging.getLogger("Main")
 
 
-async def check_startup_positions() -> bool:
-    """
-    SAFETY CHECK: Verify no dangerous inherited positions before starting.
-    
-    Returns True if safe to proceed, False if dangerous positions exist.
-    """
-    from binance import AsyncClient
-    import os
-    
-    logger.info("🔍 Checking for inherited positions on exchange...")
-    
-    try:
-        # Use binance client directly - no need for full executor
-        client = await AsyncClient.create(
-            api_key=os.getenv('BINANCE_API_KEY'),
-            api_secret=os.getenv('BINANCE_SECRET_KEY'),
-            testnet=getattr(settings, 'TESTNET', True)
-        )
-        
-        # Fetch all positions from exchange
-        positions = await client.futures_position_information()
-        await client.close_connection()
-        
-        dangerous_positions = []
-        for pos in positions:
-            qty = float(pos.get('positionAmt', 0))
-            if qty == 0:
-                continue
-                
-            symbol = pos.get('symbol', '')
-            notional = abs(float(pos.get('notional', 0)))
-            
-            if notional > settings.MAX_POSITION_USD:
-                dangerous_positions.append({
-                    'symbol': symbol,
-                    'qty': qty,
-                    'notional': notional
-                })
-        
-        if dangerous_positions:
-            logger.critical("=" * 60)
-            logger.critical("🚨 DANGEROUS INHERITED POSITIONS DETECTED!")
-            logger.critical("=" * 60)
-            for p in dangerous_positions:
-                logger.critical(f"  {p['symbol']}: {p['qty']:.4f} (${p['notional']:,.0f})")
-            logger.critical("=" * 60)
-            logger.critical(f"MAX_POSITION_USD limit is ${settings.MAX_POSITION_USD}")
-            logger.critical("Please close these positions manually before starting!")
-            logger.critical("=" * 60)
-            return False
-        
-        logger.info("✅ No dangerous inherited positions found. Safe to start.")
-        return True
-        
-    except Exception as e:
-        logger.warning(f"⚠️ Could not check positions: {e}")
-        logger.warning("Proceeding with caution...")
-        return True  # Allow startup but warn
+
 
 
 async def shutdown(engine, shadow_book, regime_supervisor, loop):
@@ -232,7 +195,7 @@ async def monitor_circuit_breaker(stop_event: asyncio.Event):
             # 1. Get Total Realized PnL
             # We open a fresh connection every time to avoid concurrency locks
             # (sqlite3 is thread-safe for separate connections in read mode)
-            async with aiosqlite.connect('trading_data.db') as db:
+            async with aiosqlite.connect('data/trading_data.db') as db:
                 async with db.execute("SELECT SUM(pnl) FROM trades") as cursor:
                     row = await cursor.fetchone()
                     total_pnl = row[0] if row and row[0] else 0.0
@@ -251,7 +214,10 @@ async def monitor_circuit_breaker(stop_event: asyncio.Event):
                 # Raise internal error or cancel all tasks? 
                 # Simplest is to raise KeyboardInterrupt in main loop or set a global stop
                 # We will write to a file that other components watch, then kill self
-                with open("STOP_SIGNAL", "w") as f:
+                # Signal Files (Moved to shared volume)
+                STOP_SIGNAL_FILE = "data/STOP_SIGNAL"
+                PAUSE_SIGNAL_FILE = "data/PAUSE_SIGNAL"
+                with open(STOP_SIGNAL_FILE, "w") as f:
                     f.write("CIRCUIT_BREAKER_TRIGGERED")
                 
                 # Force exit
@@ -271,18 +237,11 @@ def main():
     if uvloop and sys.platform != 'win32':
         asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 
-    # ==========================================================================
-    # STARTUP SAFETY CHECK: Verify no dangerous inherited positions
-    # ==========================================================================
+    # Create loop for the application
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    
-    is_safe = loop.run_until_complete(check_startup_positions())
-    if not is_safe:
-        logger.critical("❌ ABORTING STARTUP due to dangerous inherited positions!")
-        logger.critical("Close positions on Binance testnet manually, then restart.")
-        loop.close()
-        return
+
+
     
     # ==========================================================================
     
@@ -353,6 +312,12 @@ def main():
         funding_arb = FundingArbStrategy(event_queue=engine.event_queue)
         engine.add_strategy(funding_arb)
         logger.info("💰 Funding Arbitrage Strategy activated")
+
+        # Start Cross-Exchange Arb (if multiple exchanges)
+        if len(getattr(settings, 'ACTIVE_EXCHANGES', [])) > 1:
+            cross_arb = CrossExchangeArbStrategy(event_queue=engine.event_queue)
+            engine.add_strategy(cross_arb)
+            logger.info("🌐 Cross-Exchange Arbitrage Strategy activated")
         
         # Start Circuit Breaker Monitor
         stop_event = asyncio.Event()

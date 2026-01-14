@@ -28,7 +28,7 @@ class NonceService:
     - Prevents duplicate nonces on concurrent submits
     """
     
-    def __init__(self, db_path: str = "nonce_store.db"):
+    def __init__(self, db_path: str = "data/nonce_store.db"):
         self.db_path = db_path
         self._lock = Lock()
         self._async_lock: Optional[asyncio.Lock] = None

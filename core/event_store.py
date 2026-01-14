@@ -56,7 +56,7 @@ class EventStore:
     - Enables crash recovery via event replay
     """
     
-    def __init__(self, db_path: str = "event_store.db"):
+    def __init__(self, db_path: str = "data/event_store.db"):
         self.db_path = db_path
         self._init_db_sync()
         logger.info(f"EventStore initialized with WAL mode at {db_path}")

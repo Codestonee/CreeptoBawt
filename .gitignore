@@ -39,12 +39,15 @@ ENV/
 *.swp
 *.swo
 
-# Logs and Databases
+# Logs
+logs/
 *.log
-*.sqlite
+
+# Data
+data/
 *.db
-*.db-shm
 *.db-wal
+*.db-shmwal
 bot_execution.log
 dashboard_log.txt
 

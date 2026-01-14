@@ -21,17 +21,32 @@ class Settings(BaseSettings):
 
     # OKX Config
     OKX_API_KEY: str = Field(default="", description="OKX API Key")
-    OKX_SECRET_KEY: str = Field(default="", description="OKX Secret Key")
+    OKX_SECRET_KEY: str = Field(default="", description="OKX Secret Key") # Matches .env value explicitly
     OKX_PASSPHRASE: str = Field(default="", description="OKX Passphrase")
-    OKX_API_URL: str = Field(default="https://eea.okx.com", description="OKX API URL (eea.okx.com for EU)")
     
+    # MEXC Config
+    MEXC_API_KEY: str = Field(default="", description="MEXC API Key")
+    # Support MEXC_API_SECRET to match user env
+    MEXC_SECRET_KEY: str = Field(default="", description="MEXC Secret Key", validation_alias="MEXC_API_SECRET")
+
+    # Bitget Config
+    BITGET_API_KEY: str = Field(default="", description="Bitget API Key")
+    # Support BITGET_API_SECRET to match user env
+    BITGET_SECRET_KEY: str = Field(default="", description="Bitget Secret Key", validation_alias="BITGET_API_SECRET")
+    BITGET_PASSPHRASE: str = Field(default="", description="Bitget Passphrase")
+
+    # Coinbase Config
+    COINBASE_API_KEY: str = Field(default="", description="Coinbase API Key")
+    # Support COINBASE_API_SECRET to match user env
+    COINBASE_SECRET_KEY: str = Field(default="", description="Coinbase Secret Key", validation_alias="COINBASE_API_SECRET")
+
     # Environment
-    TESTNET: bool = False # Global flag for Testnet vs Mainnet
+    TESTNET: bool = True # Global flag for Testnet vs Mainnet
     
     # Exchange Selection
     # Default exchange for legacy support
-    EXCHANGE: str = Field(default="binance", description="binance or okx")
-    ACTIVE_EXCHANGES: list[str] = ["binance", "okx"]
+    EXCHANGE: str = Field(default="binance", description="binance, okx, mexc, bitget, coinbase")
+    ACTIVE_EXCHANGES: list[str] = ["binance", "okx", "mexc", "bitget", "coinbase"]
     
     # Arbitrage Config
     ARBITRAGE_MIN_SPREAD: float = 0.005  # 0.5% spread (was 0.2%, increased to cover fees + slippage)
@@ -67,9 +82,22 @@ class Settings(BaseSettings):
     # --------------------------------------------------------------------------
     # STRICT RISK GATEKEEPER (HARD LIMITS)
     # --------------------------------------------------------------------------
-    RISK_MAX_POSITION_TOTAL_USD: float = 1000.0  # Max total exposure across ALL pairs
-    RISK_MAX_ORDER_USD: float = 500.0            # Max size of a single order (Fat Finger)
-    RISK_MIN_NOTIONAL_USD: float = 11.0          # $11.0 to safely clear $10.0 min
+    RISK_MIN_NOTIONAL_USD: float = 11.0          # Min order value (Binance > $10)
+    RISK_MAX_ORDER_USD: float = 500.0            # Fat finger protection
+    
+    # Position Limits
+    RISK_MAX_POSITION_PER_SYMBOL_USD: float = 150.0  # 75% of capital (assuming $200)
+    RISK_MAX_POSITION_TOTAL_USD: float = 150.0       # Max total exposure (single symbol focus for now)
+    RISK_MAX_OPEN_POSITIONS: int = 3                 # Max concurrent symbols
+    
+    # Daily Safety
+    RISK_MAX_DAILY_LOSS_USD: float = 50.0            # Stop if down $50 in 24h
+    RISK_MAX_ORDERS_PER_MINUTE: int = 20             # Rate limit
+    
+    # Symbol Whitelist (Empty = All Allowed)
+    APPROVED_SYMBOLS: list[str] = ['btcusdt', 'ethusdt', 'solusdt', 'dogeusdt', 'xrpusdt', 'bnbusdt', 'adausdt', 'ltcusdt']
+    
+    ADMIN_RESUME_CODE: str = "creep-resume-123"      # Simple code to unhalt
     # --------------------------------------------------------------------------
     
     # Fee Structure (Binance Futures)

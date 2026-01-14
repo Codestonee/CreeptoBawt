@@ -12,7 +12,8 @@ from analysis.regime_supervisor import RegimeSupervisor
 from risk_engine.risk_manager import RiskManager
 from execution.simulated import MockExecutionHandler
 from execution.binance_executor import BinanceExecutionHandler
-from execution.okx_executor import OkxExecutionHandler
+# from execution.okx_executor import OkxExecutionHandler # Deprecated
+from execution.ccxt_executor import CCXTExecutor
 from data.candle_provider import CandleProvider
 
 # Load environment variables
@@ -46,7 +47,7 @@ class TradingEngine:
         
         if getattr(self.settings, 'PAPER_TRADING', True):
             logger.info("Using PAPER TRADING execution handler.")
-            self.executors['mock'] = MockExecutionHandler(self.event_queue, self.risk_manager)
+            self.executors['paper'] = MockExecutionHandler(self.event_queue, self.risk_manager)
         else:
             active_exchanges = getattr(settings, 'ACTIVE_EXCHANGES', ['binance'])
             logger.info(f"Initializing executors for: {active_exchanges}")
@@ -54,8 +55,13 @@ class TradingEngine:
             for ex in active_exchanges:
                 if ex == 'binance':
                     self.executors['binance'] = BinanceExecutionHandler(self.event_queue, self.risk_manager)
-                elif ex == 'okx':
-                    self.executors['okx'] = OkxExecutionHandler(self.event_queue, self.risk_manager, testnet=self.testnet)
+            
+            # Initialize MultiExchangeManager for all other exchanges (OKX, MEXC, Coinbase, etc)
+            from execution.exchange_manager import MultiExchangeManager
+            self.multi_manager = MultiExchangeManager(testnet=self.testnet)
+            # initialization happens in start() async
+            
+            # Note: We will merge multi_manager.executors into self.executors after init
 
         # Legacy support (primary executor)
         self.execution_handler = next(iter(self.executors.values())) if self.executors else None
@@ -91,10 +97,24 @@ class TradingEngine:
         logger.info(f"📊 CandleProvider started for {len(self.symbols)} symbols")
         
         # 2. Connect execution handlers
+        # Sync MultiExchangeManager first
+        if hasattr(self, 'multi_manager'):
+            await self.multi_manager.initialize()
+            # Merge unified executors into main map
+            for name, exc in self.multi_manager.executors.items():
+                self.executors[name] = exc
+                
         for name, executor in self.executors.items():
             logger.info(f"Connecting executor: {name}...")
             if hasattr(executor, 'connect'):
                 await executor.connect()
+            
+            # Start polling for CCXT executors
+            if hasattr(executor, 'start_polling'):
+                # Note: start_polling is async but fire-and-forget in CCXTExecutor? 
+                # No, we defined it as async. We should await it?
+                # Actually, in CCXTExecutor it uses create_task internally but is async def.
+                await executor.start_polling(self.symbols)
 
         # =====================================================================
         # CRITICAL: Bootstrap exchange state BEFORE reconciliation starts
@@ -191,18 +211,17 @@ class TradingEngine:
             # STOP_SIGNAL: Flatten all and stop trading
             # --- DASHBOARD SIGNAL CHECKS (New) ---
             # STOP_SIGNAL: Flatten all and stop trading
-            if os.path.exists("signals/STOP_ALL"):
+            # STOP_SIGNAL: Flatten all and stop trading
+            if os.path.exists("data/STOP_SIGNAL"):
                 logger.critical("🚨 DASHBOARD STOP SIGNAL! Canceling all orders...")
-                try:
-                    os.remove("signals/STOP_ALL")
-                except Exception:
-                    pass
+                # We do NOT remove it here, Dashboard handles cleanup/status
+                # We just react and die.
                 await self._emergency_flatten()
                 self.running = False
                 break
             
             # PAUSE_SIGNAL: Block new orders, let existing settle
-            paused = os.path.exists("PAUSE_SIGNAL")
+            paused = os.path.exists("data/PAUSE_SIGNAL")
             if paused and not getattr(self, '_pause_logged', False):
                 logger.warning("⏸️ DASHBOARD PAUSE SIGNAL - blocking new orders")
                 self._pause_logged = True

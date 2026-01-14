@@ -122,7 +122,8 @@ class AvellanedaStoikovStrategy:
     # Fee-aware minimum spread: 2 * (maker_fee + taker_fee) + profit margin
     # This ensures we profit even if we pay taker fee on close (worst case)
     MIN_SPREAD_BPS = (2 * settings.MAKER_FEE_BPS) + (2 * settings.TAKER_FEE_BPS) + settings.MIN_PROFIT_BPS
-    MIN_NOTIONAL_USD = settings.MIN_NOTIONAL_USD
+    # Add 10% buffer to Min Notional to avoid rejections
+    MIN_NOTIONAL_USD = settings.MIN_NOTIONAL_USD * 1.1
     
     def __init__(
         self,
@@ -597,23 +598,18 @@ class AvellanedaStoikovStrategy:
         inventory_pct = q / max_units
         skew_factor = math.tanh(lambda_inv * inventory_pct)
         
-        # FIX: Asymmetric Skew application
-        # Instead of shifting center (which hurts both sides), we penalize the dangerous side
+        # FIX: Standardized Reservation Price Shift (Smooth & Classic)
+        # Instead of hacking margins with 0.2 multipliers, we shift the entire bracket.
+        # If LONG (skew > 0) -> Shift price DOWN -> Lower Bid (Buy less), Lower Ask (Sell faster)
+        # If SHORT (skew < 0) -> Shift price UP -> Higher Bid (Buy faster), Higher Ask (Sell less)
+        
+        skew_intensity = 1.0  # 100% of half-spread at max skew
+        reservation_shift = -skew_factor * optimal_half_spread * skew_intensity
+        reservation_price += reservation_shift
+
+        # We remove the old manual adjustments
         bid_adjustment = 0.0
         ask_adjustment = 0.0
-        
-        if q > 0:  # LONG - make asks aggressive (lower), bids normal
-            # Skew is positive. We want to SELL.
-            # Shift Ask DOWN (more agg), Leave Bid alone (or slightly lower)
-            ask_adjustment = -abs(skew_factor) * optimal_half_spread  # Lower Ask to sell
-            bid_adjustment = -abs(skew_factor) * optimal_half_spread * 0.2 # Lower Bid slightly to avoid buying more
-        else:      # SHORT - make bids aggressive (higher), asks normal
-            # Skew is negative. We want to BUY.
-            # Shift Bid UP (more agg), Leave Ask alone
-            bid_adjustment = abs(skew_factor) * optimal_half_spread   # Raise Bid to buy
-            ask_adjustment = abs(skew_factor) * optimal_half_spread * 0.2 # Raise Ask slightly to avoid selling more
-            
-        reservation_price += 0 # No symmetric shift anymore
 
         # 3. APPLY SPREADS & FLOOR
         
@@ -639,10 +635,16 @@ class AvellanedaStoikovStrategy:
         
         final_half_spread = max(optimal_half_spread, min_half_spread, required_half_spread)
         
-        # Toxic/Volatile Market Adjustment
+        # Toxic/Volatile Market Adjustment (VPIN-Based)
+        # Continuous scaling: Spread Multiplier = 1.0 + VPIN
+        # VPIN 0.0 (Calm) -> 1.0x Spread
+        # VPIN 0.5 (Active) -> 1.5x Spread
+        # VPIN 1.0 (Toxic) -> 2.0x Spread
         current_vpin = state['vpin'].get_vpin() or 0.0
-        if current_vpin > 0.7:
-             final_half_spread *= 2.0  # Widen spread in toxic flow
+        spread_multiplier = 1.0 + current_vpin
+        if spread_multiplier > 1.05:
+             logger.debug(f"[{symbol}] Volatility Widening: {spread_multiplier:.2f}x (VPIN {current_vpin:.2f})")
+        final_half_spread *= spread_multiplier
         
         # Apply asymmetric adjustments
         bid_price = reservation_price - final_half_spread + bid_adjustment
@@ -759,15 +761,30 @@ class AvellanedaStoikovStrategy:
                 
             logger.info(f"[{symbol}] Emergency Unwind Active (Excess ${excess_usd:.0f}). Boosting size to {unwind_qty:.4f}")
 
-        # Round up to appropriate precision (heuristic)
-        if price > 1000:  # BTC/ETH
-            base = math.ceil(base * 1000) / 1000  # 3 decimals
-        elif symbol == 'solusdt': # SOL specific
-            base = math.ceil(base)                # 0 decimals
-        elif price > 10:  # Mid-price
-            base = math.ceil(base * 100) / 100    # 2 decimals
-        else:             # Low price
-            base = math.ceil(base * 10) / 10      # 1 decimal
+        # Determine Precision / Lot Size Steps
+        # Heuristic based on price bucket (should ideally come from exchange info)
+        if price > 1000:
+            precision_step = 0.001 # 3 decimals
+        elif symbol == 'solusdt':
+            precision_step = 1.0   # 0 decimals
+        elif price > 10:
+            precision_step = 0.01  # 2 decimals
+        else:
+            precision_step = 0.1   # 1 decimal
+            
+        # Smart Rounding for Min Notional
+        # We need strictly >= $12 (target_min_usd). 
+        # Simple division might underestimate if we round down later.
+        target_min_usd = 12.0
+        min_raw = target_min_usd / price if price > 0 else self.base_quantity
+        # Ceiling division to next lot step
+        min_qty = math.ceil(min_raw / precision_step) * precision_step
+        
+        # Calculate Base Size (Larger of config base or min_notional)
+        base = max(self.base_quantity, min_qty)
+        
+        # Round the base to precision (it should be already, but to be safe)
+        base = math.ceil(base / precision_step) * precision_step
         
         # ========== TANH-BASED SKEW (replaces linear) ==========
         # Dynamic MAX units based on USD limit

@@ -1,0 +1,95 @@
+version: "3.8"
+
+services:
+  # --------------------------------------------------------------------------
+  # 1. TRADING BOT (The Brain)
+  # --------------------------------------------------------------------------
+  bot:
+    build: .
+    container_name: creeptbaws_bot
+    restart: always
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TZ=Europe/Stockholm # Match user's CET/CEST timezone
+      # Overrides for Docker environment
+      # - DB_HOST=postgres
+      # - DB_PORT=5432
+      # - DB_USER=${POSTGRES_USER}
+      # - DB_PASSWORD=${POSTGRES_PASSWORD}
+      # - DB_NAME=${POSTGRES_DB}
+      - REDIS_URL=redis://redis:6379/0
+      # Use "host.docker.internal" if you need to reach local apps on Windows/Mac
+    volumes:
+      - .:/app
+      - ./config:/app/config
+      - ./logs:/app/logs
+      - ./data:/app/data
+    depends_on:
+      - redis
+    command: [ "python", "main.py" ]
+
+  # --------------------------------------------------------------------------
+  # 2. DASHBOARD (Streamlit UI)
+  # --------------------------------------------------------------------------
+  dashboard:
+    build: .
+    container_name: creeptbaws_dashboard
+    restart: always
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TZ=Europe/Stockholm
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./dashboard:/app/dashboard
+      - ./logs:/app/logs
+      - ./data:/app/data
+      - ./config:/app/config
+      # Mount health/signal files
+      # - ./health_status.json:/app/health_status.json
+      # - ./STOP_SIGNAL:/app/STOP_SIGNAL
+      # - ./PAUSE_SIGNAL:/app/PAUSE_SIGNAL
+    depends_on:
+      - bot
+    command: [ "python", "-m", "streamlit", "run", "dashboard/app.py" ]
+
+  # --------------------------------------------------------------------------
+  # 3. DATABASE (PostgreSQL - Replaces sqlite)
+  # --------------------------------------------------------------------------
+  # postgres:
+  #   image: postgres:15-alpine
+  #   container_name: creeptbaws_db
+  #   restart: always
+  #   environment:
+  #     - POSTGRES_USER=${POSTGRES_USER:-admin}
+  #     - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-secretpassword}
+  #     - POSTGRES_DB=${POSTGRES_DB:-creept_db}
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   ports:
+  #     - "5432:5432"  # Exposed for local DBeaver access
+
+  # --------------------------------------------------------------------------
+  # 3. CACHE (Redis - Speed & Locking)
+  # --------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: creeptbaws_redis
+    restart: always
+    volumes:
+      - redis_data:/data
+  # --------------------------------------------------------------------------
+  # 4. MONITORING (Optional - Portainer)
+  # --------------------------------------------------------------------------
+  # portainer:
+  #   image: portainer/portainer-ce:latest
+  #   ports:
+  #     - "9443:9443"
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock
+  #     - portainer_data:/data
+
+volumes:
+  postgres_data:
+  redis_data:
+  portainer_data:

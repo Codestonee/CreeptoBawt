@@ -22,7 +22,7 @@ class StateManager:
     - Redis support can be added if performance demands it (currently <1MB state).
     """
     
-    def __init__(self, file_path: str = "strategy_state.json", auto_save_interval: int = 60):
+    def __init__(self, file_path: str = "data/strategy_state.json", auto_save_interval: int = 60):
         self.file_path = file_path
         self.auto_save_interval = auto_save_interval
         self._state: Dict[str, Any] = {}

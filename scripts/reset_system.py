@@ -7,13 +7,12 @@ def reset_system():
     print("---------------------------------------")
     
     files_to_delete = [
-        "trading_data.db",
-        "event_store.db",
-        "bot_execution.log",
-        "dashboard_log.txt",
-        "strategy_state.json",
-        "health_status.json",
-        "shadow_book_snapshot.json",
+        "data/trading_data.db",
+        "data/trading_data.db-wal",
+        "data/trading_data.db-shm",
+        "logs/bot_execution.log",
+        "logs/dashboard_log.txt",
+        "data/strategy_state.json",
         "STOP_SIGNAL",
         "PAUSE_SIGNAL"
     ]

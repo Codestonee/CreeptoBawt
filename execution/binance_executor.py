@@ -13,13 +13,14 @@ from binance.exceptions import BinanceAPIException
 from config.settings import settings
 from core.events import SignalEvent, FillEvent
 from core.event_store import get_event_store, EventType
-from execution.order_manager import get_order_manager, OrderState
+from execution.order_manager import OrderManager, OrderState  # Class import, not singleton
 from execution.reconciliation import ReconciliationService
 from execution.smart_router import DeterministicOrderRouter
 from utils.nonce_service import get_nonce_service
 from utils.time_sync import get_time_sync_service
 from database.db_manager import DatabaseManager
 from execution.risk_gatekeeper import RiskGatekeeper
+from execution.position_tracker import PositionTracker
 
 logger = logging.getLogger("Execution.Binance")
 
@@ -44,13 +45,17 @@ class BinanceExecutionHandler:
         self.bsm: Optional[BinanceSocketManager] = None
         
         # Production services
-        self.order_manager = get_order_manager()
+        # Production services
+        self.db = DatabaseManager()  # Shared DB Manager
+        
+        # Components to be initialized in connect()
+        self.order_manager: Optional[OrderManager] = None
+        self.gatekeeper: Optional[RiskGatekeeper] = None
+        self.position_tracker: Optional[PositionTracker] = None
+        
         self.event_store = get_event_store()
         self.nonce_service = get_nonce_service()
         self.time_sync = get_time_sync_service(testnet=testnet)
-        self.time_sync = get_time_sync_service(testnet=testnet)
-        self.db = DatabaseManager()
-        self.gatekeeper = RiskGatekeeper()
         
         # Track client_order_id -> trace_id mapping for fills
         self._order_trace_map: Dict[str, str] = {}
@@ -95,6 +100,38 @@ class BinanceExecutionHandler:
             )
             logger.info("✅ Connected to Binance REST API")
             
+            # --- COMPONENT INITIALIZATION (CRITICAL ORDER) ---
+            
+            # 1. Position Tracker (Single Source of Truth)
+            self.position_tracker = PositionTracker(self.client, self.db)
+            
+            # 2. Risk Gatekeeper (Needs Tracker + Client)
+            self.gatekeeper = RiskGatekeeper(
+                position_tracker=self.position_tracker,
+                exchange_client=self.client
+            )
+            
+            # 3. Order Manager (The Orchestrator)
+            self.order_manager = OrderManager(
+                exchange_client=self.client,
+                db_manager=self.db,
+                position_tracker=self.position_tracker,
+                risk_gatekeeper=self.gatekeeper
+            )
+            
+            # --- STARTUP SYNCHRONIZATION ---
+            # This is the "Fix Priority 1" - Sync Positions before trading
+            logger.info("🔒 performing CRITICAL startup position sync...")
+            sync_success = await self.position_tracker.initialize()
+            
+            if not sync_success:
+                error_msg = "❌ STARTUP FAILED: Could not sync positions with exchange. Trading aborted."
+                logger.critical(error_msg)
+                raise RuntimeError(error_msg)
+                
+            await self.order_manager.initialize()
+            # -------------------------------
+            
             # 2.1 Fetch Exchange Info (Dynamic Precision)
             await self._fetch_exchange_info()
             
@@ -112,22 +149,17 @@ class BinanceExecutionHandler:
                 trace_id=self.event_store.generate_trace_id()
             )
             
-            # 5. Start Reconciliation Service (sync orders every 60s)
+            # 5. Start Reconciliation Service (Legacy/Redundant but kept for safety)
+            # functionality mostly moved to PositionTracker, but keeping for orders?
             self.reconciliation = ReconciliationService(
                 api_key=self.api_key,
                 api_secret=self.api_secret,
                 testnet=self.testnet
             )
+            # Link new order manager to reconciliation if needed, or disable it
+            # For now, we rely on PositionTracker for positions.
             
-            # 5.1 BOOTSTRAP: Sync state from exchange BEFORE trading (Gemini Phase 0)
-            logger.info("🚀 Running bootstrap sync before trading...")
-            bootstrap_result = await self.reconciliation.bootstrap()
-            if bootstrap_result.get("errors"):
-                logger.warning(f"Bootstrap had errors: {bootstrap_result['errors']}")
-            
-            # 5.2 Start periodic reconciliation
-            await self.reconciliation.start()
-            logger.info("🔄 ReconciliationService started (60s sync interval)")
+            logger.info("✅ Binance Execution Handler READY")
             
         except Exception as e:
             logger.error(f"Failed to connect to Binance: {e}")
@@ -242,6 +274,10 @@ class BinanceExecutionHandler:
                 
                 if realized_pnl != 0:
                     logger.info(f"💰 Realized PnL: ${realized_pnl:.4f}")
+                
+                # Update Risk Gatekeeper (Daily Loss Tracking)
+                self.gatekeeper.update_pnl(realized_pnl)
+                
                 logger.info(f"💾 Fill processed. State: {order.state}")
                 
             except Exception as e:
@@ -320,8 +356,12 @@ class BinanceExecutionHandler:
         # Note: If price is 0 (Market Order), the value check might be skipped/inaccurate.
         # Future improvement: Fetch mark price for Market orders.
         risk_check = await self.gatekeeper.validate_order(symbol, quantity, price, side)
+        
         if not risk_check.is_allowed:
-            logger.error(f"🛑 RISK REJECT: {risk_check.reason}")
+            if getattr(risk_check, 'severity', 'INFO') == 'CRITICAL':
+                logger.critical(f"🛑 CRITICAL RISK REJECT: {risk_check.reason}")
+            else:
+                logger.error(f"🛑 RISK REJECT: {risk_check.reason}")
             return None
         # ---------------------------------------
 
