@@ -19,11 +19,13 @@ class MockExchangeClient:
     """
     Simulates Binance AsyncClient for paper trading.
     Keeps track of 'exchange' state (orders, positions, balances).
+    Now includes a REALISTIC matching engine.
     """
     def __init__(self):
         self.orders = {}  # exchange_order_id -> order_dict
+        self.active_orders = defaultdict(list) # symbol -> list of order_ids
         self.positions = defaultdict(lambda: {'amount': 0.0, 'entryPrice': 0.0, 'unrealizedPnl': 0.0})
-        self.current_prices = {}
+        self.current_prices = {} # symbol -> price
         self.balances = {'USDT': settings.INITIAL_CAPITAL}
         self.order_id_counter = 100000
 
@@ -40,15 +42,26 @@ class MockExchangeClient:
         order_type = kwargs.get('type', 'LIMIT').upper()
         client_order_id = kwargs.get('newClientOrderId', str(uuid.uuid4()))
         
-        # Market order price estimation
+        # Check current market price
+        current_market_price = self.current_prices.get(symbol)
+        
+        # Market order logic
         if order_type == 'MARKET':
-            price = self.current_prices.get(symbol, 0)
-            if price == 0:
-                # If no price yet, assume slightly above 0 to avoid crashes, 
-                # but in reality we should wait for a tick.
-                price = 10000.0 
-                logger.warning(f"Simulating fill at fallback price {price} for {symbol}")
-
+            if not current_market_price:
+                current_market_price = price if price > 0 else 0.0
+                if current_market_price == 0:
+                    logger.warning(f"Market order for {symbol} rejected - no price data")
+                    raise Exception("No market price available")
+            
+            # Slippage simulation (TAKER)
+            # Add 0.05% slippage against us
+            slippage = current_market_price * 0.0005
+            fill_price = current_market_price + slippage if side == 'BUY' else current_market_price - slippage
+            
+        else:
+            # LIMIT order logic initialization
+            fill_price = price # Only fills at this price or better
+            
         # Generate Exchange ID
         exchange_id = str(self.order_id_counter)
         self.order_id_counter += 1
@@ -68,16 +81,65 @@ class MockExchangeClient:
         }
         self.orders[exchange_id] = order
         
-        # Auto-fill immediately for simulation simplicity
-        # (In a real sim we might wait for price cross, but for now we fill immediately)
-        asyncio.create_task(self._simulate_fill(exchange_id, price, quantity))
+        # LOGIC BRANCHING
+        if order_type == 'MARKET':
+            # Fill immediately
+            asyncio.create_task(self._simulate_fill(exchange_id, fill_price, quantity))
+        else:
+            # LIMIT ORDER: Check if marketable immediately
+            filled = False
+            if current_market_price:
+                # Buy Limit >= Market Price -> Fill (Taker)
+                if side == 'BUY' and price >= current_market_price:
+                    asyncio.create_task(self._simulate_fill(exchange_id, price, quantity))
+                    filled = True
+                # Sell Limit <= Market Price -> Fill (Taker)
+                elif side == 'SELL' and price <= current_market_price:
+                    asyncio.create_task(self._simulate_fill(exchange_id, price, quantity))
+                    filled = True
+            
+            if not filled:
+                logger.info(f"?? Order {client_order_id} QUEUED @ ${price}")
+                self.active_orders[symbol].append(exchange_id)
         
         return order
 
+
+    async def futures_account(self, **kwargs):
+        """Simulate fetching account info."""
+        balance = self.balances.get('USDT', 0.0)
+        return {
+            'totalWalletBalance': str(balance),
+            'totalMarginBalance': str(balance),
+            'availableBalance': str(balance),
+            'positions': []
+        }
+
     async def futures_cancel_order(self, **kwargs):
         """Simulate cancelling an order."""
-        # For this simple sim, orders fill immediately, so cancel is rarely hit
-        pass
+        symbol = kwargs.get('symbol', '').lower()
+        order_id = kwargs.get('orderId')
+        orig_client_order_id = kwargs.get('origClientOrderId')
+        
+        target_id = None
+        if order_id:
+            target_id = str(order_id)
+        elif orig_client_order_id:
+            # Find by client ID
+            for oid, o in self.orders.items():
+                if o['clientOrderId'] == orig_client_order_id:
+                    target_id = oid
+                    break
+        
+        if target_id and target_id in self.orders:
+            self.orders[target_id]['status'] = 'CANCELED'
+            # Remove from active queue
+            if symbol and symbol in self.active_orders:
+                if target_id in self.active_orders[symbol]:
+                    self.active_orders[symbol].remove(target_id)
+            return self.orders[target_id]
+            
+        return {'status': 'CANCELED'} # Fallback
 
     async def get_positions(self) -> List[Dict]:
         """Return positions in Binance format."""
@@ -95,7 +157,43 @@ class MockExchangeClient:
 
     async def futures_exchange_info(self):
         """Return dummy exchange info."""
-        return {'symbols': []} # Not strictly used in current mock logic
+        return {'symbols': []} 
+
+    async def on_tick(self, symbol: str, price: float):
+        """Process price updates and trigger fills for pending orders."""
+        symbol = symbol.lower()
+        self.current_prices[symbol] = price
+        
+        # Check pending orders for this symbol
+        pending_ids = list(self.active_orders[symbol]) # Copy list
+        
+        for oid in pending_ids:
+            order = self.orders.get(oid)
+            if not order or order['status'] != 'NEW':
+                if oid in self.active_orders[symbol]:
+                    self.active_orders[symbol].remove(oid)
+                continue
+                
+            limit_price = order['price']
+            side = order['side']
+            
+            should_fill = False
+            
+            # Simple Matching Engine Logic
+            if side == 'BUY':
+                # Price dropped below limit
+                if price <= limit_price:
+                    should_fill = True
+            elif side == 'SELL':
+                # Price rose above limit
+                if price >= limit_price:
+                    should_fill = True
+                    
+            if should_fill:
+                # Remove from queue confirmed
+                self.active_orders[symbol].remove(oid)
+                # Fill at LIMIT price (Maker) - technically could be better but stick to limit
+                asyncio.create_task(self._simulate_fill(oid, limit_price, order['origQty']))
 
     async def _simulate_fill(self, exchange_order_id, price, quantity):
         """Helper to process a fill and update 'exchange' state."""
@@ -129,8 +227,6 @@ class MockExchangeClient:
         # If we held Long (old_amt > 0) and Sold (signed_qty < 0): PnL = (Price - Entry) * QtySold
         # If we held Short (old_amt < 0) and Bought (signed_qty > 0): PnL = (Entry - Price) * QtyBought
         
-        qty_closed = 0.0
-        
         if old_amt > 0 and signed_qty < 0:
             # Closing Long
             qty_closed = min(abs(old_amt), abs(signed_qty))
@@ -145,7 +241,6 @@ class MockExchangeClient:
         # Let's make it Net PnL for dashboard clarity.
         realized_pnl -= commission
         
-        # Update Average Entry Price (if flipping, entry becomes fill price)
         # Update Average Entry Price (if flipping, entry becomes fill price)
         if abs(new_amt) > 0.000001:
             # Case 0: Opening from flat (old_amt is near 0)
@@ -219,7 +314,8 @@ class MockExecutionHandler:
 
     async def on_tick(self, event: MarketEvent):
         """Update mock exchange prices."""
-        self.client.current_prices[event.symbol.lower()] = event.price
+        # Feed tick to matching engine
+        await self.client.on_tick(event.symbol, event.price)
 
     async def execute(self, signal: SignalEvent):
         """Submit order via OrderManager."""

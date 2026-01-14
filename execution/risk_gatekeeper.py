@@ -72,12 +72,11 @@ class RiskGatekeeper:
             if not rate_check.is_allowed:
                 return rate_check
             
-            # LAYER 3: Capital & margin checks (async API call)
-            # Only do this check if client is connected
+            # LAYER 3: Margin check (async API call if client available)
             if self.exchange_client:
-                 # Note: margin check is expensive/slow, maybe skip for very small orders?
-                 # For safety, we keep it or rely on local tracking if API is slow
-                 pass 
+                margin_check = await self._check_margin_availability(order_value)
+                if not margin_check.is_allowed:
+                    return margin_check
             
             # LAYER 4: Position limits (async - uses local OrderManager state which is synced)
             position_check = await self._check_position_limits(symbol, quantity, price, side, order_value)
@@ -228,33 +227,59 @@ class RiskGatekeeper:
 
     async def _check_exposure_limits(self, order_value: float) -> RiskCheckResult:
         """Check total exposure across all positions."""
-        # Accessing all positions might be slow if we have many.
-        # But we must check TOTAL exposure.
-        # Strategy: OrderManager should track 'total_exposure_usd' property.
-        # For now, we mock it or fetch it if method exists.
-        
-        # NOTE: OrderManager currently doesn't have `get_total_exposure()`.
-        # WE NEED TO ADD IT TO ORDER MANAGER or iterate.
-        # Let's iterate if not too many keys.
         try:
-             # Assuming we can inspect internal cache or add method.
-             # self.position_tracker.positions is Dict[symbol, Position]
-             total_exposure = 0.0
-             if hasattr(self.position_tracker, 'positions'):
-                 for pos in self.position_tracker.positions.values():
-                     total_exposure += abs(pos.quantity * pos.avg_entry_price)
-             
-             projected_exposure = total_exposure + order_value
-             
-             if projected_exposure > self.max_total_exposure:
-                 return RiskCheckResult(False, 
-                    f"Total exposure ${projected_exposure:.2f} > limit ${self.max_total_exposure}", "WARNING")
-             
-             return RiskCheckResult(True, "Exposure check passed", "INFO")
-             
+            total_exposure = 0.0
+            if hasattr(self.position_tracker, 'positions'):
+                for pos in self.position_tracker.positions.values():
+                    total_exposure += abs(pos.quantity * pos.avg_entry_price)
+            
+            projected_exposure = total_exposure + order_value
+            
+            if projected_exposure > self.max_total_exposure:
+                return RiskCheckResult(False, 
+                   f"Total exposure ${projected_exposure:.2f} > limit ${self.max_total_exposure}", "WARNING")
+            
+            return RiskCheckResult(True, "Exposure check passed", "INFO")
+            
         except Exception as e:
-            logger.warning(f"Total exposure check error (defaulting to allow): {e}")
-            return RiskCheckResult(True, "Exposure check skipped (error)", "INFO")
+            logger.error(f"Total exposure check error - REJECTING for safety: {e}")
+            return RiskCheckResult(False, f"Exposure check failed: {e}", "CRITICAL")
+
+    async def _check_margin_availability(self, order_value: float) -> RiskCheckResult:
+        """Check if there's sufficient margin for the order."""
+        try:
+            if not self.exchange_client:
+                return RiskCheckResult(True, "No exchange client - margin check skipped", "INFO")
+            
+            # Fetch account info for margin data
+            account_info = await self.exchange_client.futures_account()
+            
+            available_margin = float(account_info.get('availableBalance', 0))
+            total_margin = float(account_info.get('totalMarginBalance', 0))
+            
+            # Calculate margin utilization
+            if total_margin > 0:
+                utilization = 1 - (available_margin / total_margin)
+            else:
+                utilization = 0
+            
+            # Conservative margin requirement (assume 10x leverage = 10% margin)
+            required_margin = order_value * 0.10
+            
+            # Check if order would exceed safe margin threshold (80%)
+            if utilization > 0.80:
+                return RiskCheckResult(False, 
+                    f"Margin utilization too high: {utilization*100:.1f}%", "CRITICAL")
+            
+            if required_margin > available_margin:
+                return RiskCheckResult(False, 
+                    f"Insufficient margin: need ${required_margin:.2f}, have ${available_margin:.2f}", "CRITICAL")
+            
+            return RiskCheckResult(True, f"Margin OK (utilization: {utilization*100:.1f}%)", "INFO")
+            
+        except Exception as e:
+            logger.warning(f"Margin check failed (proceeding with caution): {e}")
+            return RiskCheckResult(True, "Margin check unavailable", "WARNING")
 
     def _is_approved_symbol(self, symbol: str) -> bool:
         """Check if symbol is in approved trading list."""

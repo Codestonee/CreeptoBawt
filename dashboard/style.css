@@ -1,292 +1,861 @@
-/* ============================================================================
-   CREEPTBAWS TITAN COMMAND CENTER - Professional Trading Dashboard
-   Inspired by Bloomberg Terminal / Wintermute Trading Desks
-   ============================================================================ */
+/* =============================================================================
+   SERQET Trading Dashboard - Premium Terminal Edition
+   Professional HFT Trading Terminal Design
+   ============================================================================= */
 
-/* FONTS */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+/* === FONTS === */
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap');
 
-/* ============================================================================
-   GLOBAL RESET
-   ============================================================================ */
+/* === CORE VARIABLES === */
+:root {
+    /* Backgrounds */
+    --bg-void: #050505;
+    --bg-primary: #0a0a0a;
+    --bg-secondary: #0f0f0f;
+    --bg-card: #141414;
+    --bg-card-header: #0c0c0c;
+    --bg-hover: #1a1a1a;
+    --bg-active: #1f1f1f;
+    
+    /* Borders */
+    --border-subtle: #1a1a1a;
+    --border-medium: #252525;
+    --border-strong: #333;
+    --border-gold: rgba(212, 175, 55, 0.3);
+    
+    /* Text */
+    --text-primary: #f0f0f0;
+    --text-secondary: #a8a8a8;
+    --text-muted: #666;
+    --text-disabled: #404040;
+    
+    /* Brand Colors */
+    --gold: #d4af37;
+    --gold-bright: #f4cf57;
+    --gold-dim: #8b7829;
+    --gold-glow: rgba(212, 175, 55, 0.4);
+    
+    /* State Colors */
+    --positive: #22c55e;
+    --positive-dim: rgba(34, 197, 94, 0.15);
+    --negative: #ef4444;
+    --negative-dim: rgba(239, 68, 68, 0.15);
+    --warning: #f59e0b;
+    --warning-dim: rgba(245, 158, 11, 0.15);
+    --info: #3b82f6;
+    
+    /* Chart Colors */
+    --chart-line: #d4af37;
+    --chart-fill: rgba(212, 175, 55, 0.08);
+    --chart-grid: #1a1a1a;
+    
+    /* Fonts */
+    --font-mono: 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    
+    /* Spacing */
+    --space-xs: 4px;
+    --space-sm: 8px;
+    --space-md: 12px;
+    --space-lg: 16px;
+    --space-xl: 24px;
+    --space-2xl: 32px;
+    
+    /* Border Radius */
+    --radius-sm: 4px;
+    --radius-md: 6px;
+    --radius-lg: 8px;
+}
+
+/* === GLOBAL RESETS === */
 .stApp {
-    background-color: #0D1117 !important;
-    color: #E6EDF3 !important;
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
+    background: var(--bg-void) !important;
+    color: var(--text-primary) !important;
 }
 
-/* Hide Streamlit UI chrome */
-#MainMenu, footer, header, [data-testid="stToolbar"], [data-testid="stSidebar"] {
-    display: none !important;
-}
-
-/* Container */
-.block-container {
-    padding: 1rem 2rem !important;
-    max-width: 100% !important;
-}
-
-/* ============================================================================
-   TYPOGRAPHY
-   ============================================================================ */
-h1, h2, h3, h4, h5, h6 {
-    font-family: 'Inter', sans-serif !important;
-    font-weight: 600 !important;
-    color: #E6EDF3 !important;
-    margin: 0 !important;
-}
-
-.metric-value {
-    font-family: 'JetBrains Mono', monospace !important;
-    font-size: 1.5rem !important;
-    font-weight: 700 !important;
-    color: #E6EDF3 !important;
-}
-
-.metric-label {
-    font-size: 0.7rem !important;
-    font-weight: 500 !important;
-    text-transform: uppercase !important;
-    letter-spacing: 0.5px !important;
-    color: #8B949E !important;
-    margin-bottom: 4px !important;
-}
-
-/* ============================================================================
-   CARD SYSTEM (Bento Grid)
-   ============================================================================ */
-.card {
-    background-color: #161B22 !important;
-    border: 1px solid #30363D !important;
-    border-radius: 8px !important;
-    padding: 16px !important;
-    margin-bottom: 12px !important;
-}
-
-.card:hover {
-    border-color: #484F58 !important;
-}
-
-.card-title {
-    font-size: 0.7rem !important;
-    font-weight: 600 !important;
-    text-transform: uppercase !important;
-    letter-spacing: 0.5px !important;
-    color: #8B949E !important;
-    margin-bottom: 12px !important;
-    padding-bottom: 8px !important;
-    border-bottom: 1px solid #21262D !important;
-}
-
-/* ============================================================================
-   STATUS COLORS
-   ============================================================================ */
-.status-ok { color: #3FB950 !important; }
-.status-warn { color: #D29922 !important; }
-.status-error { color: #F85149 !important; }
-.status-info { color: #58A6FF !important; }
-
-.text-profit { color: #3FB950 !important; }
-.text-loss { color: #F85149 !important; }
-.text-muted { color: #8B949E !important; }
-
-/* ============================================================================
-   PANIC BUTTONS
-   ============================================================================ */
-.panic-stop {
-    background-color: #21262D !important;
-    border: 1px solid #F85149 !important;
-    color: #F85149 !important;
-}
-
-.panic-stop:hover {
-    background-color: #F85149 !important;
-    color: #FFFFFF !important;
-}
-
-.panic-flatten {
-    background-color: #F85149 !important;
-    border: none !important;
-    color: #FFFFFF !important;
-    font-weight: 600 !important;
-}
-
-.panic-flatten:hover {
-    background-color: #DA3633 !important;
-}
-
-/* ============================================================================
-   BUTTONS
-   ============================================================================ */
-button[kind="secondary"] {
-    background-color: #21262D !important;
-    border: 1px solid #30363D !important;
-    color: #E6EDF3 !important;
-    border-radius: 6px !important;
-    font-weight: 500 !important;
-}
-
-button[kind="secondary"]:hover {
-    background-color: #30363D !important;
-    border-color: #484F58 !important;
-}
-
-button[kind="primary"] {
-    background-color: #238636 !important;
-    border: none !important;
-    color: #FFFFFF !important;
-    font-weight: 600 !important;
-    border-radius: 6px !important;
-}
-
-button[kind="primary"]:hover {
-    background-color: #2EA043 !important;
-}
-
-/* ============================================================================
-   DATAFRAMES & TABLES
-   ============================================================================ */
-[data-testid="stDataFrame"] {
+.stApp > header {
     background: transparent !important;
 }
 
-[data-testid="stDataFrame"] div[role="grid"] {
-    background-color: #161B22 !important;
-    border: 1px solid #30363D !important;
-    border-radius: 6px !important;
-    font-family: 'JetBrains Mono', monospace !important;
-    font-size: 0.85rem !important;
+/* Hide Streamlit branding */
+#MainMenu, footer, header[data-testid="stHeader"] {
+    visibility: hidden !important;
+    height: 0 !important;
 }
 
-/* ============================================================================
-   METRICS (Streamlit native)
-   ============================================================================ */
-[data-testid="stMetricValue"] {
-    font-family: 'JetBrains Mono', monospace !important;
-    font-size: 1.4rem !important;
-    font-weight: 700 !important;
+.block-container {
+    padding-top: 1rem !important;
+    padding-bottom: 0 !important;
+    max-width: 100% !important;
 }
 
-[data-testid="stMetricLabel"] {
-    font-size: 0.7rem !important;
-    text-transform: uppercase !important;
-    letter-spacing: 0.5px !important;
-    color: #8B949E !important;
+/* === TYPOGRAPHY === */
+body, .stApp, .stMarkdown, p, span, div {
+    font-family: var(--font-sans) !important;
 }
 
-[data-testid="stMetricDelta"] {
-    font-family: 'JetBrains Mono', monospace !important;
-    font-size: 0.8rem !important;
+code, pre, .stCode {
+    font-family: var(--font-mono) !important;
 }
 
-/* ============================================================================
-   PROGRESS BARS
-   ============================================================================ */
-.stProgress > div > div > div {
-    background-color: #238636 !important;
+/* === HEADER BAR === */
+.serqet-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-md) var(--space-xl);
+    background: linear-gradient(180deg, var(--bg-secondary) 0%, var(--bg-primary) 100%);
+    border-bottom: 1px solid var(--border-subtle);
+    margin-bottom: var(--space-lg);
 }
 
-.stProgress > div > div {
-    background-color: #21262D !important;
+.serqet-logo {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
 }
 
-/* ============================================================================
-   LOG PANEL
-   ============================================================================ */
-.log-container {
-    background-color: #0D1117 !important;
-    border: 1px solid #30363D !important;
-    border-radius: 6px !important;
-    padding: 8px !important;
-    font-family: 'JetBrains Mono', monospace !important;
-    font-size: 0.75rem !important;
-    max-height: 400px !important;
-    overflow-y: auto !important;
+.serqet-logo-icon {
+    width: 32px;
+    height: 32px;
+    fill: var(--gold);
+}
+
+.serqet-logo-text {
+    font-family: var(--font-mono);
+    font-size: 1.25rem;
+    font-weight: 700;
+    letter-spacing: 0.15em;
+    color: var(--text-primary);
+}
+
+.header-stats {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xl);
+}
+
+.header-stat {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+}
+
+.header-stat-label {
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.header-stat-value {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.header-clock {
+    font-family: var(--font-mono);
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    padding: var(--space-sm) var(--space-md);
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+}
+
+.header-clock-time {
+    color: var(--text-primary);
+}
+
+/* === CARD SYSTEM === */
+.terminal-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    margin-bottom: var(--space-lg);
+    overflow: hidden;
+}
+
+.terminal-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-md) var(--space-lg);
+    background: var(--bg-card-header);
+    border-bottom: 1px solid var(--border-subtle);
+}
+
+.terminal-card-title {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.terminal-card-title-icon {
+    color: var(--gold);
+    font-size: 0.75rem;
+}
+
+.terminal-card-body {
+    padding: var(--space-lg);
+}
+
+/* === EMERGENCY CONTROLS === */
+.emergency-panel {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: var(--space-lg);
+    margin-bottom: var(--space-lg);
+}
+
+.pause-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-md);
+    background: var(--bg-secondary);
+    border-radius: var(--radius-sm);
+    margin-bottom: var(--space-lg);
+}
+
+.pause-label {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    letter-spacing: 0.05em;
+}
+
+.flatten-button {
+    width: 100%;
+    padding: var(--space-xl) var(--space-lg);
+    background: var(--bg-secondary);
+    border: 2px solid var(--border-medium);
+    border-radius: var(--radius-md);
+    font-family: var(--font-mono);
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.flatten-button:hover {
+    border-color: var(--negative);
+    color: var(--negative);
+    box-shadow: 0 0 20px var(--negative-dim);
+}
+
+.flatten-button.armed {
+    background: var(--negative-dim);
+    border-color: var(--negative);
+    color: var(--negative);
+    animation: pulse-danger 1.5s ease-in-out infinite;
+}
+
+.flatten-armed-text {
+    display: block;
+    margin-top: var(--space-sm);
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--warning);
+    background: var(--warning-dim);
+    padding: var(--space-xs) var(--space-sm);
+    border-radius: var(--radius-sm);
+}
+
+/* === RISK METRICS === */
+.risk-metrics {
+    display: grid;
+    gap: var(--space-lg);
+}
+
+.metric-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding-bottom: var(--space-md);
+    border-bottom: 1px solid var(--border-subtle);
+}
+
+.metric-row:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+}
+
+.metric-label {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.metric-value {
+    font-family: var(--font-mono);
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.metric-value.large {
+    font-size: 1.75rem;
+    font-weight: 700;
+}
+
+.metric-value.positive {
+    color: var(--positive);
+}
+
+.metric-value.negative {
+    color: var(--negative);
+}
+
+.metric-value.gold {
+    color: var(--gold);
+}
+
+.metric-delta {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    margin-left: var(--space-sm);
+}
+
+/* === POSITIONS TABLE === */
+.positions-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.positions-header {
+    display: grid;
+    grid-template-columns: 2fr 1fr 1.5fr 1.5fr 1fr;
+    gap: var(--space-sm);
+    padding: var(--space-sm) 0;
+    border-bottom: 1px solid var(--border-medium);
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.position-row {
+    display: grid;
+    grid-template-columns: 2fr 1fr 1.5fr 1.5fr 1fr;
+    gap: var(--space-sm);
+    padding: var(--space-md) 0;
+    border-bottom: 1px solid var(--border-subtle);
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    align-items: center;
+    transition: background 0.15s ease;
+}
+
+.position-row:hover {
+    background: var(--bg-hover);
+}
+
+.position-symbol {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.position-symbol-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--gold);
+}
+
+.position-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    font-size: 0.65rem;
+    font-weight: 600;
+    border-radius: 3px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.position-badge.long {
+    background: var(--positive-dim);
+    color: var(--positive);
+}
+
+.position-badge.short {
+    background: var(--negative-dim);
+    color: var(--negative);
+}
+
+.position-badge.maker {
+    background: var(--gold-glow);
+    color: var(--gold);
+}
+
+/* === TRADES FEED === */
+.trades-feed {
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.trade-row {
+    display: grid;
+    grid-template-columns: 60px 80px 50px 60px 70px;
+    gap: var(--space-xs);
+    padding: var(--space-sm) 0;
+    border-bottom: 1px solid var(--border-subtle);
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    align-items: center;
+}
+
+.trade-time {
+    color: var(--text-muted);
+}
+
+.trade-symbol {
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+.trade-badge {
+    padding: 1px 6px;
+    font-size: 0.6rem;
+    font-weight: 600;
+    border-radius: 2px;
+}
+
+.trade-badge.buy {
+    background: var(--positive-dim);
+    color: var(--positive);
+}
+
+.trade-badge.sell {
+    background: var(--negative-dim);
+    color: var(--negative);
+}
+
+.trade-qty {
+    text-align: right;
+    color: var(--text-secondary);
+}
+
+.trade-pnl {
+    text-align: right;
+    font-weight: 600;
+}
+
+.trade-pnl.positive {
+    color: var(--positive);
+}
+
+.trade-pnl.negative {
+    color: var(--negative);
+}
+
+/* === EVENT LOG === */
+.event-log {
+    max-height: 150px;
+    overflow-y: auto;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
 }
 
 .log-entry {
-    padding: 4px 8px !important;
-    border-bottom: 1px solid #21262D !important;
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-sm);
+    padding: var(--space-xs) 0;
+    color: var(--text-secondary);
 }
 
-.log-buy { color: #3FB950 !important; }
-.log-sell { color: #F85149 !important; }
-.log-warn { color: #D29922 !important; }
-.log-info { color: #8B949E !important; }
-
-/* ============================================================================
-   HEADER BAR
-   ============================================================================ */
-.header-bar {
-    background-color: #161B22 !important;
-    border-bottom: 1px solid #30363D !important;
-    padding: 8px 16px !important;
-    margin-bottom: 16px !important;
-    border-radius: 6px !important;
+.log-entry.info {
+    color: var(--text-secondary);
 }
 
+.log-entry.warn {
+    color: var(--warning);
+}
+
+.log-entry.error {
+    color: var(--negative);
+}
+
+.log-badge {
+    padding: 1px 4px;
+    font-size: 0.55rem;
+    font-weight: 600;
+    border-radius: 2px;
+    text-transform: uppercase;
+    flex-shrink: 0;
+}
+
+.log-badge.info {
+    background: var(--bg-active);
+    color: var(--text-muted);
+}
+
+.log-badge.warn {
+    background: var(--warning-dim);
+    color: var(--warning);
+}
+
+.log-badge.error {
+    background: var(--negative-dim);
+    color: var(--negative);
+}
+
+/* === SYSTEM HEALTH === */
+.health-panel {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-lg);
+}
+
+.health-metric {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+}
+
+.health-label {
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.health-value {
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+}
+
+.health-bar {
+    height: 4px;
+    background: var(--bg-secondary);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-top: var(--space-xs);
+}
+
+.health-bar-fill {
+    height: 100%;
+    background: var(--positive);
+    border-radius: 2px;
+    transition: width 0.3s ease;
+}
+
+.health-bar-fill.warning {
+    background: var(--warning);
+}
+
+.health-bar-fill.danger {
+    background: var(--negative);
+}
+
+/* Heartbeat Animation */
+.heartbeat-container {
+    width: 100%;
+    height: 40px;
+    position: relative;
+    overflow: hidden;
+    margin-top: var(--space-sm);
+}
+
+.heartbeat-line {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    width: 200%;
+    height: 2px;
+    background: linear-gradient(90deg, 
+        transparent 0%,
+        var(--negative) 10%,
+        var(--negative) 15%,
+        transparent 15%,
+        transparent 20%,
+        var(--negative) 25%,
+        var(--negative) 30%,
+        transparent 35%,
+        transparent 100%
+    );
+    animation: heartbeat-scroll 3s linear infinite;
+}
+
+@keyframes heartbeat-scroll {
+    0% { transform: translateX(0); }
+    100% { transform: translateX(-50%); }
+}
+
+/* === STATUS INDICATORS === */
 .status-dot {
-    width: 8px !important;
-    height: 8px !important;
-    border-radius: 50% !important;
-    display: inline-block !important;
-    margin-right: 6px !important;
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: var(--space-sm);
 }
 
-.status-dot-online { background-color: #3FB950 !important; }
-.status-dot-offline { background-color: #F85149 !important; }
-.status-dot-warn { background-color: #D29922 !important; }
-
-/* ============================================================================
-   TABS
-   ============================================================================ */
-.stTabs [data-baseweb="tab-list"] {
-    background-color: transparent !important;
-    border-bottom: 1px solid #30363D !important;
-    gap: 0 !important;
+.status-dot.active {
+    background: var(--positive);
+    box-shadow: 0 0 8px var(--positive);
+    animation: pulse-glow 2s ease-in-out infinite;
 }
 
-.stTabs [data-baseweb="tab"] {
-    background-color: transparent !important;
-    color: #8B949E !important;
-    border: none !important;
-    padding: 8px 16px !important;
+.status-dot.warning {
+    background: var(--warning);
+    box-shadow: 0 0 8px var(--warning);
 }
 
-.stTabs [data-baseweb="tab"]:hover {
-    color: #E6EDF3 !important;
+.status-dot.error {
+    background: var(--negative);
+    box-shadow: 0 0 8px var(--negative);
+    animation: pulse-danger 1s ease-in-out infinite;
 }
 
-.stTabs [aria-selected="true"] {
-    background-color: transparent !important;
-    color: #E6EDF3 !important;
-    border-bottom: 2px solid #58A6FF !important;
+/* === BUTTONS === */
+.stButton > button {
+    font-family: var(--font-mono) !important;
+    font-size: 0.75rem !important;
+    font-weight: 600 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.05em !important;
+    border-radius: var(--radius-sm) !important;
+    border: 1px solid var(--border-medium) !important;
+    background: var(--bg-secondary) !important;
+    color: var(--text-primary) !important;
+    padding: var(--space-sm) var(--space-lg) !important;
+    transition: all 0.15s ease !important;
+    width: 100%;
 }
 
-/* ============================================================================
-   PLOTLY CHARTS
-   ============================================================================ */
-.js-plotly-plot {
-    background-color: transparent !important;
+.stButton > button:hover {
+    background: var(--bg-hover) !important;
+    border-color: var(--gold-dim) !important;
 }
 
-/* ============================================================================
-   SCROLLBARS (Professional look)
-   ============================================================================ */
+.stButton > button:active {
+    background: var(--bg-active) !important;
+}
+
+/* === RADIO BUTTONS === */
+.stRadio > div {
+    display: flex !important;
+    gap: var(--space-xs) !important;
+    flex-wrap: wrap !important;
+}
+
+.stRadio > div > label {
+    font-family: var(--font-mono) !important;
+    font-size: 0.65rem !important;
+    color: var(--text-muted) !important;
+    background: var(--bg-secondary) !important;
+    border: 1px solid var(--border-subtle) !important;
+    padding: var(--space-xs) var(--space-md) !important;
+    border-radius: var(--radius-sm) !important;
+    cursor: pointer !important;
+    transition: all 0.15s ease !important;
+}
+
+.stRadio > div > label:hover {
+    border-color: var(--border-medium) !important;
+    color: var(--text-secondary) !important;
+}
+
+.stRadio > div > label[data-checked="true"] {
+    background: var(--gold-glow) !important;
+    border-color: var(--gold) !important;
+    color: var(--gold) !important;
+}
+
+/* === CHECKBOX === */
+.stCheckbox > label {
+    font-family: var(--font-mono) !important;
+    font-size: 0.7rem !important;
+    color: var(--text-secondary) !important;
+}
+
+/* === SELECT BOX === */
+.stSelectbox > div > div {
+    background: var(--bg-secondary) !important;
+    border-color: var(--border-subtle) !important;
+    font-family: var(--font-mono) !important;
+    font-size: 0.75rem !important;
+}
+
+/* === TOGGLE === */
+.toggle-switch {
+    position: relative;
+    width: 44px;
+    height: 24px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-medium);
+    border-radius: 12px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.toggle-switch.active {
+    background: var(--positive-dim);
+    border-color: var(--positive);
+}
+
+.toggle-switch::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 18px;
+    height: 18px;
+    background: var(--text-muted);
+    border-radius: 50%;
+    transition: all 0.2s ease;
+}
+
+.toggle-switch.active::after {
+    left: 22px;
+    background: var(--positive);
+}
+
+/* === ANIMATIONS === */
+@keyframes pulse-glow {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
+
+@keyframes pulse-danger {
+    0%, 100% { 
+        box-shadow: 0 0 5px var(--negative);
+        opacity: 1;
+    }
+    50% { 
+        box-shadow: 0 0 20px var(--negative);
+        opacity: 0.8;
+    }
+}
+
+@keyframes pulse-gold {
+    0%, 100% { box-shadow: 0 0 5px var(--gold-glow); }
+    50% { box-shadow: 0 0 15px var(--gold-glow); }
+}
+
+/* === SCROLLBARS === */
 ::-webkit-scrollbar {
-    width: 8px !important;
-    height: 8px !important;
+    width: 6px;
+    height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-    background: #0D1117 !important;
+    background: var(--bg-secondary);
 }
 
 ::-webkit-scrollbar-thumb {
-    background: #30363D !important;
-    border-radius: 4px !important;
+    background: var(--border-medium);
+    border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-    background: #484F58 !important;
+    background: var(--border-strong);
+}
+
+/* === CHART CONTAINER === */
+.chart-container {
+    background: transparent;
+    border-radius: var(--radius-sm);
+    padding: var(--space-sm);
+}
+
+/* === VALUE STATES === */
+.val-positive {
+    color: var(--positive) !important;
+}
+
+.val-negative {
+    color: var(--negative) !important;
+}
+
+.val-neutral {
+    color: var(--text-secondary) !important;
+}
+
+.val-gold {
+    color: var(--gold) !important;
+}
+
+/* === RESPONSIVE === */
+@media (max-width: 1600px) {
+    .metric-value.large {
+        font-size: 1.5rem;
+    }
+    
+    .terminal-card-body {
+        padding: var(--space-md);
+    }
+}
+
+@media (max-width: 1200px) {
+    .header-stats {
+        gap: var(--space-lg);
+    }
+    
+    .header-stat {
+        font-size: 0.7rem;
+    }
+}
+
+/* === UTILITY CLASSES === */
+.text-center { text-align: center; }
+.text-right { text-align: right; }
+.text-mono { font-family: var(--font-mono); }
+.text-gold { color: var(--gold); }
+.text-muted { color: var(--text-muted); }
+.mt-0 { margin-top: 0 !important; }
+.mb-0 { margin-bottom: 0 !important; }
+.mb-sm { margin-bottom: var(--space-sm); }
+.mb-md { margin-bottom: var(--space-md); }
+.mb-lg { margin-bottom: var(--space-lg); }
+
+/* === TRADE ROW HUES === */
+.trade-row.positive-hue {
+    background: linear-gradient(90deg, var(--positive-dim), transparent 80%);
+}
+.trade-row.negative-hue {
+    background: linear-gradient(90deg, var(--negative-dim), transparent 80%);
+}
+
+/* === SMOOTH TRANSITIONS === */
+.stApp > div {
+    transition: opacity 0.2s ease-in-out;
+}
+
+.terminal-card {
+    min-height: fit-content;
+    will-change: contents;
+    transition: all 0.2s ease;
+}
+
+.metric-value, .header-stat-value {
+    transition: color 0.3s ease, transform 0.1s ease;
 }

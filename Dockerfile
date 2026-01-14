@@ -1,35 +1,46 @@
-# Slim Python image
-from python:3.11-slim
+# Multi-stage build for smaller image
+FROM python:3.10-slim as builder
 
-# Set working directory
-WORKDIR /app
-
-# Install system dependencies (build-essential needed for some pip packages)
+# Install build dependencies
 RUN apt-get update && apt-get install -y \
-    build-essential \
-    libpq-dev \
     gcc \
+    g++ \
+    make \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements
+WORKDIR /app
+
+# Copy requirements first (caching layer)
 COPY requirements.txt .
 
 # Install Python dependencies
-# Upgrade pip first
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt && \
-    # Install asyncpg for Postgres support
-    pip install --no-cache-dir asyncpg
+RUN pip install --no-cache-dir --user -r requirements.txt
+
+# ===== Final stage =====
+FROM python:3.10-slim
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy installed packages from builder
+COPY --from=builder /root/.local /root/.local
+
+# Add .local/bin to PATH
+ENV PATH=/root/.local/bin:$PATH
 
 # Copy application code
 COPY . .
 
-# Create logs and data directories
-RUN mkdir -p logs && mkdir -p data
+# Create directories
+RUN mkdir -p logs data/backtest_cache config monitoring
 
-# Run as non-root user (Security Best Practice)
-# RUN useradd -m botuser
-# USER botuser
+# Healthcheck
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD python -c "import sqlite3; conn = sqlite3.connect('data/trading_data.db'); conn.close()" || exit 1
 
-# Default command
-CMD ["python", "main.py"]
+# Run bot
+CMD ["python", "main_integrated.py"]

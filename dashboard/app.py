@@ -1,21 +1,24 @@
 """
-CreeptBaws# Titan HFT Dashboard - Safety-First Edition (v3.0.1)al Trading Dashboard
-3-Column Cockpit Layout: Controls | Market | Feed
+SERQET Trading Dashboard - Premium Terminal Edition
+Professional HFT Command Center
 
-Design Philosophy:
-- Left: Control & Risk (Your hands)
-- Center: Market & Strategy (Your eyes)  
-- Right: Logs & Positions (Your memory)
-- No scroll: Everything fits on 1080p/1440p
+Layout:
+- Header: Logo, Latency, Risk Level, UTC Clock
+- Left (HANDS): Emergency Controls, Risk Metrics
+- Center (EYES): Equity Curve, Open Positions, Strategy State  
+- Right (MEMORY): Trade History, Event Log, System Health
 """
+
 import streamlit as st
 import pandas as pd
 import sqlite3
 import os
 import time
-from datetime import datetime
+import json
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 import plotly.graph_objects as go
+import textwrap
 
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -27,8 +30,8 @@ load_dotenv()
 # PAGE CONFIG
 # =============================================================================
 st.set_page_config(
-    page_title="CreeptBaws | Command",
-    page_icon="🛡️",
+    page_title="SERQET | Command",
+    page_icon="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦂</text></svg>",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
@@ -43,25 +46,35 @@ def load_css():
 load_css()
 
 # Session state
-if 'panic_armed' not in st.session_state:
-    st.session_state.panic_armed = False
+if 'flatten_armed' not in st.session_state:
+    st.session_state.flatten_armed = False
 
 # =============================================================================
-# SIGNAL FILES (Emergency Controls)
+# CONSTANTS
 # =============================================================================
 STOP_SIGNAL_FILE = "data/STOP_SIGNAL"
 PAUSE_SIGNAL_FILE = "data/PAUSE_SIGNAL"
+FLATTEN_SIGNAL_FILE = "data/FLATTEN_SIGNAL"
 
+SCORPION_SVG = '<svg viewBox="0 0 100 100" width="28" height="28" style="fill: #d4af37;"><path d="M50 10 C30 10 20 30 20 50 C20 70 35 85 50 90 C65 85 80 70 80 50 C80 30 70 10 50 10 Z M50 20 C60 20 70 35 70 50 C70 65 60 75 50 80 C40 75 30 65 30 50 C30 35 40 20 50 20 Z"/><path d="M25 45 L10 30 M75 45 L90 30 M30 60 L15 75 M70 60 L85 75"/></svg>'
+
+# =============================================================================
+# SIGNAL FUNCTIONS
+# =============================================================================
 def send_stop_signal():
     with open(STOP_SIGNAL_FILE, "w") as f:
-        f.write(f"STOP:{datetime.now().isoformat()}")
+        f.write(f"STOP:{datetime.now(timezone.utc).isoformat()}")
 
 def send_pause_signal():
     with open(PAUSE_SIGNAL_FILE, "w") as f:
-        f.write(f"PAUSE:{datetime.now().isoformat()}")
+        f.write(f"PAUSE:{datetime.now(timezone.utc).isoformat()}")
+
+def send_flatten_signal():
+    with open(FLATTEN_SIGNAL_FILE, "w") as f:
+        f.write(f"FLATTEN:{datetime.now(timezone.utc).isoformat()}")
 
 def clear_signals():
-    for f in [STOP_SIGNAL_FILE, PAUSE_SIGNAL_FILE]:
+    for f in [STOP_SIGNAL_FILE, PAUSE_SIGNAL_FILE, FLATTEN_SIGNAL_FILE]:
         if os.path.exists(f):
             os.remove(f)
 
@@ -69,8 +82,8 @@ def get_signal_status():
     if os.path.exists(STOP_SIGNAL_FILE):
         return "STOPPED", "error"
     elif os.path.exists(PAUSE_SIGNAL_FILE):
-        return "PAUSED", "warn"
-    return "ACTIVE", "ok"
+        return "PAUSED", "warning"
+    return "LIVE", "active"
 
 # =============================================================================
 # DATABASE
@@ -83,20 +96,15 @@ def get_db_connection():
 
 @st.cache_data(ttl=2)
 def get_metrics():
-    """Calculate all key metrics."""
     conn = get_db_connection()
     if not conn:
         return None
     
     try:
-        # Fetch ALL trades for accurate PnL/Win Rate (No LIMIT)
         trades = pd.read_sql_query("SELECT * FROM trades ORDER BY id DESC", conn)
         positions = pd.read_sql_query("SELECT * FROM positions", conn)
-        
-        # Get all-time best/worst stats directly from DB
         best_trade_db = pd.read_sql_query("SELECT * FROM trades ORDER BY pnl DESC LIMIT 1", conn)
         worst_trade_db = pd.read_sql_query("SELECT * FROM trades ORDER BY pnl ASC LIMIT 1", conn)
-        
         conn.close()
         
         if trades.empty:
@@ -106,80 +114,41 @@ def get_metrics():
                 "unrealized_pnl": 0.0,
                 "trades_count": 0,
                 "win_rate": 0.0,
-                "win_rate_total": 0.0,
-                "win_rate_decision": 0.0,
                 "winners": 0,
                 "losers": 0,
-                "breakevens": 0,
-                "total_pnl_green": 0.0,
-                "total_pnl_red": 0.0,
-                "equity_curve": [settings.INITIAL_CAPITAL],
+                "equity_curve": pd.DataFrame(),
                 "recent_trades": pd.DataFrame(),
                 "positions": positions,
-                "maker_rate": 0,
                 "best_trade": 0,
                 "worst_trade": 0,
                 "best_info": "",
                 "worst_info": "",
-                "inventory_breakdown": {}
+                "inventory": {}
             }
         
         pnl_total = trades['pnl'].sum()
         trades_count = len(trades)
         winners = len(trades[trades['pnl'] > 0])
         losers = len(trades[trades['pnl'] < 0])
-        breakevens = len(trades[trades['pnl'] == 0])
+        decisive = winners + losers
+        win_rate = (winners / decisive * 100) if decisive > 0 else 0
         
-        # Calculate total PnL for winners and losers
-        total_pnl_green = trades[trades['pnl'] > 0]['pnl'].sum()
-        total_pnl_red = trades[trades['pnl'] < 0]['pnl'].sum()
-        
-        # Standard Win Rate: Winners / Total Trades
-        win_rate_total = (winners / trades_count * 100) if trades_count > 0 else 0
-        
-        # Decision Win Rate: Winners / (Winners + Losers) - ignores breakeven
-        decisive_trades = winners + losers
-        win_rate_decision = (winners / decisive_trades * 100) if decisive_trades > 0 else 0
-        
-        # Equity curve
         # Equity curve
         trades_sorted = trades.sort_values('timestamp')
-        # Create DataFrame with time and equity
         equity_df = pd.DataFrame()
         if not trades_sorted.empty:
-            # Convert to UTC-aware timestamps immediately and floor to microseconds
-            equity_df['timestamp'] = pd.to_datetime(trades_sorted['timestamp'], unit='s', utc=True).dt.floor('us')
+            equity_df['timestamp'] = pd.to_datetime(trades_sorted['timestamp'], unit='s', utc=True)
             equity_df['equity'] = trades_sorted['pnl'].cumsum() + settings.INITIAL_CAPITAL
-            # Add initial point? Maybe complex for now, let's stick to trade points.
         
+        # Best/worst
+        best_pnl = float(best_trade_db.iloc[0]['pnl']) if not best_trade_db.empty else 0
+        best_info = best_trade_db.iloc[0].get('symbol', 'N/A').upper() if not best_trade_db.empty else "N/A"
+        worst_pnl = float(worst_trade_db.iloc[0]['pnl']) if not worst_trade_db.empty else 0
+        worst_info = worst_trade_db.iloc[0].get('symbol', 'N/A').upper() if not worst_trade_db.empty else "N/A"
         
-        # Best/worst trades
-        best_pnl = trades['pnl'].max()
-        # Best/worst trades (All Time)
-        if not best_trade_db.empty:
-            best_row = best_trade_db.iloc[0]
-            best_pnl = float(best_row['pnl'])
-            best_info = f"{best_row.get('symbol', 'N/A').upper()}"
-            if 'timestamp' in best_row:
-                best_info += f" @ {pd.to_datetime(best_row['timestamp'], unit='s').strftime('%H:%M:%S')}"
-        else:
-            best_pnl = 0
-            best_info = "N/A"
-
-        if not worst_trade_db.empty:
-            worst_row = worst_trade_db.iloc[0]
-            worst_pnl = float(worst_row['pnl'])
-            worst_info = f"{worst_row.get('symbol', 'N/A').upper()}"
-            if 'timestamp' in worst_row:
-                worst_info += f" @ {pd.to_datetime(worst_row['timestamp'], unit='s').strftime('%H:%M:%S')}"
-        else:
-            worst_pnl = 0
-            worst_info = "N/A"
+        unrealized = positions['unrealized_pnl'].sum() if 'unrealized_pnl' in positions.columns else 0
         
-        # Unrealized PnL
-        unrealized_pnl = positions['unrealized_pnl'].sum() if 'unrealized_pnl' in positions.columns else 0
-        
-        # Inventory breakdown
+        # Inventory
         inventory = {}
         if not positions.empty and 'symbol' in positions.columns:
             for _, row in positions.iterrows():
@@ -187,38 +156,26 @@ def get_metrics():
                     inventory[row['symbol'].upper()] = {
                         'qty': row['quantity'],
                         'entry': row.get('avg_entry_price', 0),
+                        'mark': row.get('mark_price', row.get('avg_entry_price', 0)),
                         'pnl': row.get('unrealized_pnl', 0)
                     }
         
-        # Maker rate
-        maker_rate = 0
-        if 'is_maker' in trades.columns:
-            maker_rate = (trades['is_maker'].sum() / trades_count * 100) if trades_count > 0 else 0
-        
         return {
-            "balance": settings.INITIAL_CAPITAL + pnl_total + unrealized_pnl,
+            "balance": settings.INITIAL_CAPITAL + pnl_total + unrealized,
             "realized_pnl": pnl_total,
-            "unrealized_pnl": unrealized_pnl,
+            "unrealized_pnl": unrealized,
             "trades_count": trades_count,
-            "trades_count": trades_count,
-            "win_rate_total": win_rate_total,
-            "win_rate_decision": win_rate_decision,
+            "win_rate": win_rate,
             "winners": winners,
             "losers": losers,
-            "breakevens": breakevens,
-            "total_pnl_green": total_pnl_green,
-            "total_pnl_red": total_pnl_red,
-            "total_pnl_green": total_pnl_green,
-            "total_pnl_red": total_pnl_red,
             "equity_curve": equity_df,
             "recent_trades": trades,
             "positions": positions,
-            "maker_rate": maker_rate,
             "best_trade": best_pnl,
             "worst_trade": worst_pnl,
             "best_info": best_info,
             "worst_info": worst_info,
-            "inventory_breakdown": inventory
+            "inventory": inventory
         }
     except Exception as e:
         st.error(f"Data error: {e}")
@@ -226,748 +183,523 @@ def get_metrics():
 
 @st.cache_data(ttl=3)
 def get_system_health():
-    """Get system health metrics."""
     health = {
-        "ws_status": "OK",
         "ws_latency": 12,
-        "last_reconcile": "2s ago",
+        "uptime": "0h 0m",
         "db_status": "OK",
-        "router_mode": "LIMIT_CHASE",
-        "gtx_rejections": 0
+        "risk_level": 15
     }
     
-    # Check for health file
     if os.path.exists("health_status.json"):
         try:
-            import json
             with open("health_status.json") as f:
-                health.update(json.load(f))
+                data = json.load(f)
+                health.update(data)
+                
+                # Calculate Uptime if start_time is present
+                if 'start_time' in data:
+                    try:
+                        start_ts = float(data['start_time'])
+                        uptime_seconds = time.time() - start_ts
+                        hours = int(uptime_seconds // 3600)
+                        minutes = int((uptime_seconds % 3600) // 60)
+                        health['uptime'] = f"{hours}h {minutes}m"
+                    except:
+                        pass
         except:
             pass
     
     return health
 
+
+
+def get_strategy_state():
+    if not os.path.exists("data/strategy_state.json"):
+        return {}
+    try:
+        with open("data/strategy_state.json") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def get_log_entries():
+    if not os.path.exists("logs/dashboard_log.txt"):
+        return []
+    try:
+        with open("logs/dashboard_log.txt", "r") as f:
+            return f.readlines()[-15:]
+    except:
+        return []
+
 # =============================================================================
 # HEADER
 # =============================================================================
 def render_header():
-    """Top status bar."""
     status, status_type = get_signal_status()
     health = get_system_health()
     
-    cols = st.columns([3, 2, 1, 1, 1, 1])
+    status_colors = {"active": "#22c55e", "warning": "#f59e0b", "error": "#ef4444"}
+    status_color = status_colors.get(status_type, "#666")
     
-    with cols[0]:
-        st.markdown("### 🛡️ CREEPTBAWS COMMAND")
+    latency = health.get('ws_latency', 0)
+    lat_color = "#22c55e" if latency < 50 else "#f59e0b" if latency < 100 else "#ef4444"
     
-    with cols[1]:
-        if status == "ACTIVE":
-            st.markdown(f"<span style='color:#3FB950'>● {status}</span>", unsafe_allow_html=True)
-        elif status == "PAUSED":
-            st.markdown(f"<span style='color:#D29922'>● {status}</span>", unsafe_allow_html=True)
-        else:
-            st.markdown(f"<span style='color:#F85149'>● {status}</span>", unsafe_allow_html=True)
+    risk = health.get('risk_level', 0)
+    risk_color = "#22c55e" if risk < 30 else "#f59e0b" if risk < 70 else "#ef4444"
     
-    with cols[2]:
-        st.markdown(f"`WS: {health['ws_status']} ({health['ws_latency']}ms)`")
+    utc_time = datetime.now(timezone.utc).strftime("%H:%M:%S")
     
-    with cols[3]:
-        st.markdown(f"`RECON: {health['last_reconcile']}`")
-    
-    with cols[4]:
-        st.markdown(f"`{health['router_mode']}`")
-    
-    with cols[5]:
-        st.markdown(f"`{datetime.now().strftime('%H:%M:%S')}`")
-    
-    st.markdown("---")
+    st.markdown(f"""
+<div class="serqet-header">
+<div class="serqet-logo">
+{SCORPION_SVG}
+<span class="serqet-logo-text">SERQET</span>
+</div>
+<div class="header-stats">
+<div class="header-stat">
+<span class="header-stat-label">LATENCY</span>
+<span class="header-stat-value" style="color: {lat_color}">{latency} MS</span>
+</div>
+<div class="header-stat">
+<span class="header-stat-label">RISK</span>
+<div style="display: flex; align-items: center; gap: 8px;">
+<div style="width: 60px; height: 4px; background: #1a1a1a; border-radius: 2px; overflow: hidden;">
+<div style="width: {risk}%; height: 100%; background: {risk_color};"></div>
+</div>
+</div>
+</div>
+<div class="header-stat">
+<span class="status-dot {status_type}"></span>
+<span style="color: {status_color}">{status}</span>
+</div>
+</div>
+<div class="header-clock">
+<span class="header-clock-time">{utc_time}</span> UTC
+</div>
+</div>
+""", unsafe_allow_html=True)
 
 # =============================================================================
-# LEFT COLUMN: CONTROLS & RISK
+# CARD COMPONENT
 # =============================================================================
-def render_controls(metrics, health):
-    """Control panel (Static to prevent button flicker)."""
-    # EMERGENCY CONTROLS
-    st.markdown("##### ⚠️ EMERGENCY")
-    
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("⏸️ PAUSE", help="Stop new orders", width="stretch"):
-            send_pause_signal()
-            st.toast("⏸️ Paused", icon="⏸️")
-            st.rerun()
-    
-    with c2:
-        if st.session_state.panic_armed:
-            if st.button("🔥 CONFIRM", type="primary", width="stretch"):
-                send_stop_signal()
-                st.session_state.panic_armed = False
-                st.toast("🛑 FLATTEN SENT", icon="🔥")
-                st.rerun()
-        else:
-            if st.button("🛑 FLATTEN", help="Arm flatten", width="stretch"):
-                st.session_state.panic_armed = True
-                st.rerun()
-    
-    if st.session_state.panic_armed:
-        st.warning("⚠️ Click CONFIRM to flatten all")
+def card(title, icon=""):
+    st.markdown(textwrap.dedent(f"""
+    <div class="terminal-card">
+        <div class="terminal-card-header">
+            <div class="terminal-card-title">
+                <span class="terminal-card-title-icon">{icon}</span> {title}
+            </div>
+        </div>
+        <div class="terminal-card-body">
+    """), unsafe_allow_html=True)
+
+def card_end():
+    st.markdown("</div></div>", unsafe_allow_html=True)
+
+# =============================================================================
+# LEFT COLUMN - EMERGENCY CONTROLS & RISK METRICS
+# =============================================================================
+def render_left_column(metrics, health):
+    # Emergency Controls
+    card("EMERGENCY CONTROLS", "⚡")
     
     status, _ = get_signal_status()
-    if status != "ACTIVE":
-        if st.button("▶️ RESUME", width="stretch"):
-            clear_signals()
-            st.session_state.panic_armed = False
-            st.toast("▶️ Resumed", icon="✅")
+    is_paused = status == "PAUSED"
+    
+    # Pause Toggle
+    pause_col1, pause_col2 = st.columns([3, 1])
+    with pause_col1:
+        st.markdown(f"<div style='font-family: var(--font-mono); font-size: 0.8rem; color: var(--text-primary);'>PAUSE</div>", unsafe_allow_html=True)
+    with pause_col2:
+        if st.button("ON" if not is_paused else "OFF", key="pause_toggle"):
+            if is_paused:
+                if os.path.exists(PAUSE_SIGNAL_FILE):
+                    os.remove(PAUSE_SIGNAL_FILE)
+            else:
+                send_pause_signal()
             st.rerun()
     
-    st.markdown("---")
-
-def setup_account_stats(container):
-    """Setup static layout for Left Column Stats to avoid flicker."""
-    phs = {}
-    with container:
-        st.markdown("##### 💰 ACCOUNT")
+    st.markdown("<div style='height: 16px'></div>", unsafe_allow_html=True)
+    
+    # Flatten Button
+    if st.session_state.flatten_armed:
+        st.markdown(textwrap.dedent("""
+        <div class="flatten-button armed">
+            FLATTEN
+            <span class="flatten-armed-text">ARMED - PRESS TO CONFIRM</span>
+        </div>
+        """), unsafe_allow_html=True)
+        if st.button("CONFIRM FLATTEN", key="confirm_flatten", type="primary"):
+            send_flatten_signal()
+            st.session_state.flatten_armed = False
+            st.rerun()
+        if st.button("CANCEL", key="cancel_flatten"):
+            st.session_state.flatten_armed = False
+            st.rerun()
+    else:
+        if st.button("FLATTEN", key="arm_flatten", use_container_width=True):
+            st.session_state.flatten_armed = True
+            st.rerun()
+    
+    card_end()
+    
+    # Risk Metrics
+    card("RISK METRICS", "≡")
+    
+    if metrics:
+        balance = metrics.get('balance', 0)
+        realized = metrics.get('realized_pnl', 0)
+        win_rate = metrics.get('win_rate', 0)
+        best = metrics.get('best_trade', 0)
+        worst = metrics.get('worst_trade', 0)
         
-        # Net Liq
-        phs['net_liq'] = st.empty()
+        pnl_pct = (realized / settings.INITIAL_CAPITAL * 100) if settings.INITIAL_CAPITAL > 0 else 0
+        pnl_color = "positive" if realized >= 0 else "negative"
         
-        col1, col2 = st.columns(2)
-        phs['realized'] = col1.empty()
-        phs['unrealized'] = col2.empty()
-        
-        st.markdown("---")
-        st.markdown("##### 📊 PERFORMANCE")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-             # Checkbox must be interactive, so it creates state.
-             phs['wr_checkbox_val'] = st.checkbox("Excl. Break-even", value=False, key="wr_toggle", help="Show Win Rate excluding 0 PnL trades")
-             phs['win_rate'] = st.empty()
-             phs['win_count'] = st.empty()
-        
-        with col2:
-             phs['maker_rate'] = st.empty()
-             phs['gtx_rej'] = st.empty()
-             
-        col1, col2 = st.columns(2)
-        # Fix: Separate placeholders to avoid overwrite
-        with col1:
-            phs['best_val'] = st.empty()
-            phs['best_info'] = st.empty()
-            
-        with col2:
-            phs['worst_val'] = st.empty()
-            phs['worst_info'] = st.empty()
-        
-        return phs
-
-def update_account_stats(phs, metrics, health):
-    """Update values in existing placeholders."""
-    if not metrics: return
+        st.markdown(textwrap.dedent(f"""
+        <div class="risk-metrics">
+            <div class="metric-row">
+                <span class="metric-label">BALANCE</span>
+                <span class="metric-value large">${balance:,.2f}</span>
+            </div>
+            <div class="metric-row">
+                <span class="metric-label">REAL. PnL</span>
+                <span class="metric-value {pnl_color}">
+                    {'+' if realized >= 0 else ''}${realized:,.2f}
+                    <span class="metric-delta {pnl_color}">{'+' if pnl_pct >= 0 else ''}{pnl_pct:.2f}%</span>
+                </span>
+            </div>
+            <div class="metric-row">
+                <span class="metric-label">WIN RATE</span>
+                <span class="metric-value">{win_rate:.1f}%</span>
+            </div>
+            <div class="metric-row">
+                <span class="metric-label">BEST TRADE</span>
+                <span class="metric-value positive">+${best:,.2f} <span style="color: var(--text-muted); font-size: 0.7rem;">{metrics.get('best_info', '')}</span></span>
+            </div>
+            <div class="metric-row">
+                <span class="metric-label">WORST TRADE</span>
+                <span class="metric-value negative">${worst:,.2f} <span style="color: var(--text-muted); font-size: 0.7rem;">{metrics.get('worst_info', '')}</span></span>
+            </div>
+        </div>
+        """), unsafe_allow_html=True)
     
-    balance = metrics['balance']
-    pnl_pct = ((balance - settings.INITIAL_CAPITAL) / settings.INITIAL_CAPITAL * 100)
-    phs['net_liq'].metric("Net Liquidation", f"${balance:,.2f}", f"{pnl_pct:+.2f}%")
-    
-    phs['realized'].metric("Realized", f"${metrics['realized_pnl']:+.2f}")
-    phs['unrealized'].metric("Unrealized", f"${metrics['unrealized_pnl']:+.2f}")
-    
-    # WR
-    use_decision_wr = phs.get('wr_checkbox_val', False)
-    wr_value = metrics['win_rate_decision'] if use_decision_wr else metrics['win_rate_total']
-    wr_label = "Win Rate (Dec)" if use_decision_wr else "Win Rate (All)"
-    phs['win_rate'].metric(wr_label, f"{wr_value:.1f}%")
-    
-    
-    
-    # Update caption with PnL totals (Exact User Format)
-    # Format: ✅ x / ❌ x (green total / red total)
-    counts_str = f"✅ {metrics['winners']} / ❌ {metrics['losers']}"
-    totals_str = f"(:green[${metrics['total_pnl_green']:+.2f}] / :red[${metrics['total_pnl_red']:+.2f}])"
-    
-    final_md = f"{counts_str} {totals_str}"
-    
-    # Add Break-even count if Excl. Break-even is un-checked
-    if not use_decision_wr:
-        final_md += f" :grey[⚪ {metrics['breakevens']}]"
-        
-    phs['win_count'].markdown(final_md)
-    
-    # Maker
-    phs['maker_rate'].metric("Maker Rate", f"{metrics['maker_rate']:.0f}%")
-    phs['gtx_rej'].caption(f"GTX rej: {health.get('gtx_rejections', 0)}")
-    
-    # Best/Worst
-    c1 = "normal" if metrics['best_trade'] > 0 else "off"
-    phs['best_val'].metric("🏆 Best", f"${metrics['best_trade']:+.2f}", delta_color=c1)
-    phs['best_info'].caption(metrics['best_info'])
-    
-    c2 = "normal" if metrics['worst_trade'] > 0 else "inverse"
-    phs['worst_val'].metric("💀 Worst", f"${metrics['worst_trade']:+.2f}", delta_color=c2)
-    phs['worst_info'].caption(metrics['worst_info']) # Added caption update
-    phs['best_info'].caption(metrics['best_info'])   # Added caption update
+    card_end()
 
 # =============================================================================
-# CENTER COLUMN: MARKET & STRATEGY
+# CENTER COLUMN - EQUITY CURVE, POSITIONS, STRATEGY
 # =============================================================================
-def setup_center_column(container):
-    """Setup static layout for Center Column."""
-    phs = {}
-    with container:
-        tab1, tab2 = st.tabs(["📈 EQUITY & POSITIONS", "🧠 STRATEGY STATE"])
-        
-        with tab1:
-            # Header with Selector
-            c1, c2 = st.columns([2, 2])
-            with c1:
-                st.markdown("##### 📈 EQUITY CURVE")
-            with c2:
-                # Time Window Selector
-                phs['time_window'] = st.radio(
-                    "Time Window", 
-                    ["10M", "1H", "4H", "24H"], 
-                    horizontal=True, 
-                    label_visibility="collapsed",
-                    key="equity_window_selector",
-                    index=1 # Default 1H
-                )
-            
-            # Equity Chart Placeholder
-            phs['equity_chart'] = st.empty()
-            st.markdown("---")
-            st.markdown("##### 📍 POSITIONS")
-            # Positions Placeholder
-            phs['positions'] = st.empty()
-            
-        with tab2:
-            st.markdown("##### 🤖 STRATEGY INTERNALS")
-            # Strategy Stats Placeholder
-            phs['strategy_stats'] = st.empty()
-            
-    return phs
-
-def update_center_column(phs, metrics):
-    """Update Center Column dynamic content."""
+def render_center_column(metrics):
+    # Equity Curve
+    card("EQUITY CURVE", "≡")
     
-    # 1. EQUITY CHART
-    if metrics is not None:
-        eq_df = metrics['equity_curve']
+    if metrics and not metrics['equity_curve'].empty:
+        df = metrics['equity_curve'].copy()
+        realized = metrics.get('realized_pnl', 0)
+        pnl_pct = (realized / settings.INITIAL_CAPITAL * 100) if settings.INITIAL_CAPITAL > 0 else 0
+        pnl_color = "#22c55e" if realized >= 0 else "#ef4444"
         
-        # Get Time Window
-        window_map = {"10M": 10, "1H": 60, "4H": 240, "24H": 1440}
-        selected_window = st.session_state.get("equity_window_selector", "1H")
-        minutes = window_map.get(selected_window, 60)
+        st.markdown(textwrap.dedent(f"""
+        <div style="display: flex; align-items: baseline; gap: 16px; margin-bottom: 16px;">
+            <span style="font-family: var(--font-mono); font-size: 1.5rem; font-weight: 700; color: {pnl_color};">
+                {'+' if realized >= 0 else ''}${realized:,.2f}
+            </span>
+            <span style="font-family: var(--font-mono); font-size: 0.9rem; color: {pnl_color};">
+                {'+' if pnl_pct >= 0 else ''}{pnl_pct:.2f}%
+            </span>
+        </div>
+        """), unsafe_allow_html=True)
         
-        from datetime import timezone
-        # Use UTC for all time calculations
-        now = datetime.now(timezone.utc)
-        start_time = now - pd.Timedelta(minutes=minutes)
+        # Time filter
+        time_window = st.radio("", ["1H", "4H", "24H", "ALL"], horizontal=True, label_visibility="collapsed", key="eq_time")
         
-        # Filter Data
-        chart_data = pd.DataFrame()
-        if not eq_df.empty:
-            # Ensure timestamps are UTC-aware for comparison
-            if eq_df['timestamp'].dt.tz is None:
-                eq_df['timestamp'] = eq_df['timestamp'].dt.tz_localize('UTC')
-            else:
-                eq_df['timestamp'] = eq_df['timestamp'].dt.tz_convert('UTC')
-                
-            chart_data = eq_df[eq_df['timestamp'] >= start_time].copy()
-            # Cast to microsecond to avoid Plotly warning (preserving previous fix)
-            # chart_data['timestamp'] = chart_data['timestamp'].astype('datetime64[us]') 
-            # Note: tz-aware datetime64[ns, UTC] might still trigger warnings if not handled, 
-            # but usually the issue is specifically high-precision nanoseconds.
-            # Let's trust pandas truncation or explicit cast if needed. 
-            # Safe bet: Convert to standard separate ISO string or just let Plotly handle datetime objects if they are clean.
+        now = pd.Timestamp.now(tz='UTC')
+        if time_window == "1H":
+            df = df[df['timestamp'] >= now - pd.Timedelta(hours=1)]
+        elif time_window == "4H":
+            df = df[df['timestamp'] >= now - pd.Timedelta(hours=4)]
+        elif time_window == "24H":
+            df = df[df['timestamp'] >= now - pd.Timedelta(hours=24)]
         
-        start_capital = settings.INITIAL_CAPITAL
-        
-        # Determine Color based on latest equity vs start of WINDOW (or absolute start?)
-        current_equity = chart_data['equity'].iloc[-1] if not chart_data.empty else start_capital
-        line_color = '#3FB950' if current_equity >= start_capital else '#F85149'
-        fill_color = 'rgba(63, 185, 80, 0.1)' if current_equity >= start_capital else 'rgba(248, 81, 73, 0.1)'
-
-        fig = go.Figure()
-        
-        x_min_range = start_time
-        x_max_range = now
-
-        if not chart_data.empty:
-            # Main Line
+        if not df.empty:
+            line_color = '#d4af37'
+            fill_color = 'rgba(212, 175, 55, 0.08)'
+            
+            fig = go.Figure()
             fig.add_trace(go.Scatter(
-                x=chart_data['timestamp'],
-                y=chart_data['equity'],
+                x=df['timestamp'],
+                y=df['equity'],
                 mode='lines',
-                fill='tozeroy',
                 line=dict(color=line_color, width=2),
+                fill='tozeroy',
                 fillcolor=fill_color,
-                hoverinfo='y+x'
+                hovertemplate='<b>$%{y:,.2f}</b><extra></extra>'
             ))
             
-            # Pulsing Dot (Current Value)
-            last_pt = chart_data.iloc[-1]
-            fig.add_trace(go.Scatter(
-                x=[last_pt['timestamp']],
-                y=[last_pt['equity']],
-                mode='markers',
-                marker=dict(
-                    color='#3FB950',
-                    size=12,
-                    line=dict(color='white', width=2),
-                    symbol='circle'
-                ),
+            fig.update_layout(
+                height=200,
+                margin=dict(l=0, r=0, t=10, b=30),
+                paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(0,0,0,0)',
+                xaxis=dict(showgrid=True, gridcolor='#1a1a1a', zeroline=False, showline=False),
+                yaxis=dict(showgrid=True, gridcolor='#1a1a1a', side='left', zeroline=False, showline=False, tickprefix='$'),
                 showlegend=False,
-                hoverinfo='skip'
-            ))
-
-            # Dynamic X-Axis Start:
-            # If data started AFTER the window start (e.g. bot just started), snap to data start.
-            # If data started BEFORE window start (e.g. long running), snap to window start.
-            data_start = chart_data['timestamp'].min()
-            x_min_range = max(start_time, data_start)
+                font=dict(family="JetBrains Mono", size=9, color="#666")
+            )
             
-            # Add small padding to right so the dot isn't cut off
-            x_max_range = now + pd.Timedelta(seconds=30*minutes/60) # scaled padding
-
-        # Dynamic Y-Axis Range logic
-        y_min = start_capital
-        y_max = start_capital
-        if not chart_data.empty:
-            y_min = chart_data['equity'].min()
-            y_max = chart_data['equity'].max()
-        
-        # Add padding
-        y_range = max(y_max - y_min, 10) # Min $10 range
-        y_min -= y_range * 0.1
-        y_max += y_range * 0.1
-
-        fig.update_layout(
-            height=280,
-            margin=dict(l=0, r=0, t=10, b=0),
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0)',
-            xaxis=dict(
-                showgrid=False, 
-                showticklabels=True,
-                tickformat='%H:%M',
-                range=[x_min_range, x_max_range], # Dynamic Range
-                gridcolor='#21262D'
-            ),
-            yaxis=dict(
-                showgrid=True, 
-                gridcolor='#21262D', 
-                tickformat='$,.0f',
-                range=[y_min, y_max] # Dynamic Y based on data
-            ),
-            showlegend=False
-        )
-        phs['equity_chart'].plotly_chart(fig, width="stretch", key=f"eq_chart_{time.time()}")
+            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
     else:
-        phs['equity_chart'].info("Loading...")
-
-    # 2. POSITIONS
-    CRYPTO_ICONS = {
-        'BTC': '🟠', 'BTCUSDT': '🟠', 'ETH': '🔷', 'ETHUSDT': '🔷',
-        'SOL': '🟣', 'SOLUSDT': '🟣', 'DOGE': '🐕', 'DOGEUSDT': '🐕',
-        'XRP': '⚫', 'XRPUSDT': '⚫', 'BNB': '🟡', 'BNBUSDT': '🟡',
-        'ADA': '🔵', 'ADAUSDT': '🔵', 'LTC': '⚪', 'LTCUSDT': '⚪'
-    }
+        st.markdown("<div style='color: var(--text-muted); text-align: center; padding: 40px;'>No equity data</div>", unsafe_allow_html=True)
     
-    pos_html = ""
-    if metrics and metrics['inventory_breakdown']:
-        for sym, data in metrics['inventory_breakdown'].items():
-            icon = CRYPTO_ICONS.get(sym.upper(), '💎')
+    card_end()
+    
+    # Open Positions
+    card("OPEN POSITIONS", "◎")
+    
+    st.markdown(textwrap.dedent("""
+    <div class="positions-header">
+        <span>SYMBOL</span>
+        <span>POSITION</span>
+        <span style="text-align: right">ENTRY PRICE</span>
+        <span style="text-align: right">MARK PRICE</span>
+        <span style="text-align: right">UNREALIZED PnL</span>
+    </div>
+    """), unsafe_allow_html=True)
+    
+    if metrics and metrics.get('inventory'):
+        html = ""
+        for sym, data in metrics['inventory'].items():
             qty = data['qty']
-            pnl = data['pnl']
+            entry = data.get('entry', 0)
+            mark = data.get('mark', entry)
+            pnl = data.get('pnl', 0)
             
-            if qty > 0:
-                dir_emoji = "📈"; dir_text = "LONG"; border_color = "#3FB950"
-            else:
-                dir_emoji = "📉"; dir_text = "SHORT"; border_color = "#F85149"
+            pos_type = "long" if qty > 0 else "short"
+            pnl_class = "positive" if pnl >= 0 else "negative"
             
-            pnl_color = "#3FB950" if pnl > 0 else "#F85149" if pnl < 0 else "#8B949E"
-            
-            pos_html += f"""
-<div style="display:flex; justify-content:space-between; padding:8px; margin:4px 0; background:#161B22; border-radius:6px; border-left:3px solid {border_color};">
-<div><span style="font-size:1.1rem">{icon}</span> <b style="color:#E6EDF3">{sym.upper()}</b> <span style="color:{border_color}; font-size:0.75rem">{dir_emoji} {dir_text}</span></div>
-<div style="text-align:right"><div style="color:#8B949E; font-size:0.75rem">Size: {qty:+.4f}</div><div style="color:{pnl_color}; font-weight:600">${pnl:+.2f}</div></div>
-</div>"""
-        phs['positions'].markdown(pos_html, unsafe_allow_html=True)
+            html += textwrap.dedent(f"""
+            <div class="position-row">
+                <div class="position-symbol">
+                    <span class="position-symbol-dot"></span>
+                    {sym}
+                </div>
+                <div><span class="position-badge {pos_type}">{pos_type.upper()}</span></div>
+                <div style="text-align: right; color: var(--text-secondary);">${entry:,.2f}</div>
+                <div style="text-align: right; color: var(--text-primary);">${mark:,.2f}</div>
+                <div style="text-align: right;" class="metric-value {pnl_class}">{'+' if pnl >= 0 else ''}${pnl:,.2f}</div>
+            </div>
+            """)
+        st.markdown(html, unsafe_allow_html=True)
     else:
-        phs['positions'].info("No open positions")
-
-    # 3. STRATEGY INTERNALS
-    # Since this is complex to update bit-by-bit, we'll redraw the container content
-    # using the placeholder.
-    if os.path.exists("data/strategy_state.json"):
-        try:
-            import json
-            with open("data/strategy_state.json") as f:
-                full_state = json.load(f)
-            
-            # Determine which symbol to show
-            token_filter = st.session_state.get("trade_token_filter", "ALL")
-            active_sym = None
-            
-            if token_filter != "ALL":
-                # Filter format is "🔵 ADAUSDT" -> extract ADAUSDT
-                selected_sym = token_filter.split(" ")[-1].lower()
-                if selected_sym in full_state:
-                    active_sym = selected_sym
-            
-            # If no specific match or ALL, pick first available
-            if not active_sym and full_state:
-                active_sym = next(iter(full_state))
-                
-            if active_sym and active_sym in full_state:
-                state = full_state[active_sym]
-                
-                regime = state.get('regime', 'UNKNOWN')
-                color = '#3FB950' if regime == 'MEAN_REVERTING' else '#D29922' if regime == 'TRENDING' else '#F85149'
-                
-                # Try to get VPIN/Spread if they exist, or calculate/default
-                vpin = state.get('vpin', 0)
-                v_color = '#3FB950' if vpin < 0.5 else '#D29922' if vpin < 0.7 else '#F85149'
-                
-                # Format helper
-                def fmt_param(val):
-                    return f"{val:.2e}" if val < 0.0001 and val > 0 else f"{val:.4f}"
-
-                strategy_html = f"""
-                <div style="margin-bottom:5px; text-align:center; color:#8B949E; font-size:0.8rem">
-                    Displaying logic for: <b style="color:#E6EDF3">{active_sym.upper()}</b>
-                </div>
-                <div style="display:flex; justify-content:space-around; margin-bottom:10px;">
-                    <div>Regime: <span style='color:{color}; font-weight:bold'>{regime}</span></div>
-                    <div>VPIN: <span style='color:{v_color}; font-weight:bold'>{vpin:.2f}</span></div>
-                    <div>Vol: <b>{state.get('volatility', 0)*10000:.1f} bps</b></div>
-                </div>
-                <hr style="margin:5px 0; border-color:#30363D">
-                <div style="font-size:0.8rem; color:#8B949E; margin-bottom:4px"><b>Avellaneda-Stoikov Params:</b></div>
-                <div style="display:flex; justify-content:space-around; font-family:'JetBrains Mono', monospace; font-size:0.9rem">
-                   <div>γ: <span style="color:#E6EDF3">{fmt_param(state.get('gamma', 0))}</span></div>
-                   <div>κ: <span style="color:#E6EDF3">{fmt_param(state.get('kappa', 0))}</span></div>
-                   <div>σ: <span style="color:#E6EDF3">{fmt_param(state.get('volatility', 0))}</span></div>
-                </div>
-                """
-                phs['strategy_stats'].markdown(strategy_html, unsafe_allow_html=True)
-            else:
-                 phs['strategy_stats'].info("No active strategy state found")
-            
-        except Exception as e:
-            phs['strategy_stats'].error(f"Error reading state: {e}")
-    else:
-        phs['strategy_stats'].info("No strategy state file found")
-
-# =============================================================================
-# RIGHT COLUMN: LOGS & FEED
-# =============================================================================
-def setup_right_column(container, initial_metrics=None):
-    """Setup static layout for Right Column."""
-    phs = {}
-    with container:
-        st.markdown("##### ⚡ TRADES")
-        
-        # 1. Filters Row
-        # Icons
-        CRYPTO_ICONS = {
-            'BTC': '🟠', 'BTCUSDT': '🟠', 'ETH': '🔷', 'ETHUSDT': '🔷',
-            'SOL': '🟣', 'SOLUSDT': '🟣', 'DOGE': '🐕', 'DOGEUSDT': '🐕',
-            'XRP': '⚫', 'XRPUSDT': '⚫', 'BNB': '🟡', 'BNBUSDT': '🟡',
-            'ADA': '🔵', 'ADAUSDT': '🔵', 'LTC': '⚪', 'LTCUSDT': '⚪'
-        }
-        
-        # 1. View Mode (Moved up as requested)
-        options = ["PnL", "Winners", "Losers", "All"]
-        st.radio("View", options, horizontal=True, label_visibility="collapsed", key="trade_view_filter")
-        
-        # 2. Filters Row
-        # Get Symbols
-        symbols = ["ALL"]
-        if initial_metrics and 'recent_trades' in initial_metrics and not initial_metrics['recent_trades'].empty:
-            raw_syms = sorted(initial_metrics['recent_trades']['symbol'].unique().tolist())
-            # Format: 🔵 ADAUSDT
-            for s in raw_syms:
-                s_upper = s.upper()
-                icon = CRYPTO_ICONS.get(s_upper, '💎')
-                symbols.append(f"{icon} {s_upper}")
-            
-        col1, col2 = st.columns(2)
-        with col1:
-            st.selectbox("Token", symbols, key="trade_token_filter", label_visibility="collapsed")
-        with col2:
-            st.selectbox("Sort", ["Newest", "Best PnL", "Worst PnL"], key="trade_sort_filter", label_visibility="collapsed")
-            
-        # Hide Dust Filter
-        st.checkbox("Hide Dust (<$0.01)", value=True, key="trade_hide_dust", help="Hide trades with absolute PnL < $0.01")
-            
-        # Table Placeholder
-        phs['trades_table'] = st.empty()
-        
-        st.markdown("---")
-        st.markdown("##### 📜 EVENT LOG")
-        
-        # Log Placeholder
-        phs['event_log'] = st.empty()
-        
-        st.markdown("---")
-        st.markdown("##### 🔧 SYSTEM")
-        
-        # System Health Placeholder
-        phs['system_health'] = st.empty()
-        
-        return phs
-
-def update_right_column(phs, metrics):
-    """Update Right Column Data."""
+        st.markdown("<div style='color: var(--text-muted); text-align: center; padding: 20px;'>No open positions</div>", unsafe_allow_html=True)
     
-    # 1. TRADES LIST
-    # Get filters
-    token_selection = st.session_state.get("trade_token_filter", "ALL")
-    sort_filter = st.session_state.get("trade_sort_filter", "Newest")
-    view_filter = st.session_state.get("trade_view_filter", "PnL")
-    hide_dust = st.session_state.get("trade_hide_dust", True)
+    card_end()
+    
+    # Strategy State
+    card("STRATEGY STATE", "◈")
+    
+    state = get_strategy_state()
+    if state:
+        html = '<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px;">'
+        for sym, data in list(state.items())[:6]:
+            regime = data.get('regime', 'UNKNOWN')
+            vol = data.get('volatility', 0)
+            kappa = data.get('kappa', 0)
+            
+            regime_colors = {"TRENDING": "#22c55e", "VOLATILE": "#f59e0b", "RANGING": "#666"}
+            regime_color = regime_colors.get(regime, "#666")
+            
+            html += textwrap.dedent(f"""
+            <div style="background: var(--bg-secondary); padding: 12px; border-radius: 4px; border-left: 2px solid var(--gold);">
+                <div style="font-family: var(--font-mono); font-size: 0.8rem; font-weight: 600; color: var(--text-primary); margin-bottom: 8px;">{sym}</div>
+                <div style="display: flex; justify-content: space-between; font-size: 0.7rem; margin-bottom: 4px;">
+                    <span style="color: var(--text-muted);">REGIME</span>
+                    <span style="color: {regime_color};">{regime}</span>
+                </div>
+                <div style="display: flex; justify-content: space-between; font-size: 0.7rem; margin-bottom: 4px;">
+                    <span style="color: var(--text-muted);">VOL</span>
+                    <span style="color: var(--text-secondary);">{vol:.4f}</span>
+                </div>
+                <div style="display: flex; justify-content: space-between; font-size: 0.7rem;">
+                    <span style="color: var(--text-muted);">KAPPA</span>
+                    <span style="color: var(--text-secondary);">{kappa:.2f}</span>
+                </div>
+            </div>
+            """)
+        html += '</div>'
+        st.markdown(html, unsafe_allow_html=True)
+    else:
+        st.markdown("<div style='color: var(--text-muted); text-align: center; padding: 20px;'>No strategy data</div>", unsafe_allow_html=True)
+    
+    card_end()
+
+# =============================================================================
+# RIGHT COLUMN - TRADE HISTORY, EVENT LOG, SYSTEM HEALTH
+# =============================================================================
+def render_right_column(metrics, health, sort_mode="Newest"):
+    # Trade History
+    card("TRADE HISTORY", "≡")
     
     if metrics and not metrics['recent_trades'].empty:
         df = metrics['recent_trades'].copy()
         
-        # Hide Dust
-        if hide_dust:
-            df = df[df['pnl'].abs() >= 0.01]
-        
-        # Token Filter
-        if token_selection != "ALL":
-            # Extract symbol from "🔵 ADAUSDT" -> "ADAUSDT"
-            token_filter = token_selection.split(" ")[-1]
-            df = df[df['symbol'].str.upper() == token_filter]
-        
-        # View Filter
-        if view_filter == "PnL":
-            df = df[df['pnl'] != 0]
-        elif view_filter == "Winners":
-            df = df[df['pnl'] > 0]
-        elif view_filter == "Losers":
-            df = df[df['pnl'] < 0]
-            
-        # Sort
-        if sort_filter == "Best PnL":
+        # Apply Sorting
+        if sort_mode == "Best PnL":
             df = df.sort_values("pnl", ascending=False)
-        elif sort_filter == "Worst PnL":
+        elif sort_mode == "Worst PnL":
             df = df.sort_values("pnl", ascending=True)
         else: # Newest
-            # Ensure sorting by time/id
             if 'timestamp' in df.columns:
-                 df = df.sort_values("timestamp", ascending=False)
-            else:
-                 df = df.sort_values("id", ascending=False)
+                df = df.sort_values("timestamp", ascending=False)
+        
+        df = df.head(15)
+        
+        html = '<div class="trades-feed">'
+        for _, row in df.iterrows():
+            ts = pd.to_datetime(row.get('timestamp', 0), unit='s').strftime('%H:%M:%S') if 'timestamp' in row else "--:--"
+            sym = str(row.get('symbol', 'N/A')).upper()
+            side = str(row.get('side', 'N/A')).upper()
+            qty = float(row.get('quantity', 0))
+            pnl = float(row.get('pnl', 0))
             
-        # Limit Display
-        df = df.head(10)
-        
-        # Format
-        CRYPTO_ICONS = {
-            'BTC': '🟠', 'BTCUSDT': '🟠', 'ETH': '🔷', 'ETHUSDT': '🔷',
-            'SOL': '🟣', 'SOLUSDT': '🟣', 'DOGE': '🐕', 'DOGEUSDT': '🐕',
-            'XRP': '⚫', 'XRPUSDT': '⚫', 'BNB': '🟡', 'BNBUSDT': '🟡',
-            'ADA': '🔵', 'ADAUSDT': '🔵', 'LTC': '⚪', 'LTCUSDT': '⚪'
-        }
-        
-        # Fixed Height to prevent jumping
-        html_cards = '<div style="height: 500px; overflow-y: auto; padding-right: 5px;">'
-        
-        if df.empty:
-             html_cards += '<div style="color:#8B949E; padding:10px; text-align:center">No trades found matching filters</div>'
-        else:
-            for _, row in df.iterrows():
-                sym = str(row.get('symbol', 'N/A')).upper()
-                icon = CRYPTO_ICONS.get(sym, '💎')
-                side = str(row.get('side', 'N/A')).upper()
-                qty = float(row.get('quantity', 0))
-                pnl = float(row.get('pnl', 0))
-                
-                # Timestamp
-                if 'timestamp' in row:
-                    ts = pd.to_datetime(row['timestamp'], unit='s').strftime('%H:%M:%S')
-                else:
-                    ts = "--:--:--"
-                
-                # Styles & Precision
-                is_win = pnl > 0
-                is_loss = pnl < 0
-                
-                if is_win:
-                    border_color = "#3FB950" # Green
-                    pnl_color = "#3FB950"
-                    pnl_str = f"${pnl:+.4f}" if pnl < 0.01 else f"${pnl:+.2f}"
-                elif is_loss:
-                    border_color = "#F85149" # Red
-                    pnl_color = "#F85149"
-                    pnl_str = f"${pnl:+.4f}" if pnl > -0.01 else f"${pnl:+.2f}"
-                else:
-                    border_color = "#30363D" # Grey
-                    pnl_color = "#8B949E"
-                    pnl_str = "$0.00"
-                    
-                side_badge = f'<span style="color:{border_color}; font-size:0.75rem; border:1px solid {border_color}; padding: 1px 4px; border-radius: 4px;">{side}</span>'
-                
-                # Card HTML
-                html_cards += f"""<div style="display:flex; justify-content:space-between; align-items:center; padding:8px; margin:4px 0; background:#161B22; border-radius:6px; border-left:3px solid {border_color};"><div><div style="font-size:0.7rem; color:#8B949E; margin-bottom:2px;">{ts}</div><div style="display:flex; align-items:center; gap:6px;"><span style="font-size:1.1rem">{icon}</span><b style="color:#E6EDF3">{sym}</b>{side_badge}</div></div><div style="text-align:right"><div style="color:#8B949E; font-size:0.75rem">Size: {qty:.4f}</div><div style="color:{pnl_color}; font-weight:600; font-size:0.9rem">{pnl_str}</div></div></div>"""
+            side_class = "buy" if side == "BUY" else "sell"
+            pnl_class = "positive" if pnl > 0 else "negative" if pnl < 0 else ""
+            pnl_hue = "positive-hue" if pnl > 0 else "negative-hue" if pnl < 0 else ""
             
-        html_cards += "</div>"
-        phs['trades_table'].markdown(html_cards, unsafe_allow_html=True)
+            html += textwrap.dedent(f"""
+            <div class="trade-row {pnl_hue}">
+                <span class="trade-time">{ts}</span>
+                <span class="trade-symbol">{sym}</span>
+                <span class="trade-badge {side_class}">{side}</span>
+                <span class="trade-qty">{qty:.3f}</span>
+                <span class="trade-pnl {pnl_class}">{'+' if pnl > 0 else ''}${pnl:.2f}</span>
+            </div>
+            """)
+        html += '</div>'
+        st.markdown(html, unsafe_allow_html=True)
     else:
-        phs['trades_table'].info("No trades yet")
-
-    # 2. EVENT LOG
-    log_entries = []
-    if os.path.exists("logs/dashboard_log.txt"): # Updated path
-        try:
-            with open("logs/dashboard_log.txt", "r") as f:
-                log_entries = f.readlines()[-20:]
-        except:
-            pass
-            
-    log_html = """<div class="log-container" style="height: 200px; overflow-y: auto; background: #0D1117; border: 1px solid #30363D; border-radius: 6px; padding: 8px; font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;">"""
+        st.markdown("<div style='color: var(--text-muted); text-align: center; padding: 20px;'>No trades yet</div>", unsafe_allow_html=True)
     
-    if log_entries:
-        for entry in reversed(log_entries):
+    card_end()
+    
+    # Event Log
+    card("EVENT LOG", "◉")
+    
+    entries = get_log_entries()
+    html = '<div class="event-log">'
+    if entries:
+        for entry in reversed(entries):
             entry = entry.strip()
-            color = "#8B949E"
-            if "ERROR" in entry or "CRITICAL" in entry: color = "#F85149"
-            elif "WARNING" in entry or "risk" in entry.lower(): color = "#D29922"
-            elif "BUY" in entry: color = "#3FB950"
-            elif "SELL" in entry: color = "#F85149"
-            elif "INFO" in entry: color = "#E6EDF3"
+            if not entry:
+                continue
             
-            log_html += f'<div style="color:{color}; padding:2px 0; border-bottom:1px solid #21262D; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{entry}</div>'
+            log_type = "info"
+            badge_text = "INFO"
+            if "ERROR" in entry or "CRITICAL" in entry:
+                log_type = "error"
+                badge_text = "ERROR"
+            elif "WARNING" in entry or "WARN" in entry:
+                log_type = "warn"
+                badge_text = "WARN"
+            
+            display_text = entry[:80] + "..." if len(entry) > 80 else entry
+            
+            html += textwrap.dedent(f"""
+            <div class="log-entry {log_type}">
+                <span class="log-badge {log_type}">{badge_text}</span>
+                <span>{display_text}</span>
+            </div>
+            """)
     else:
-        log_html += '<div style="color:#8B949E">Waiting for events...</div>'
+        html += '<div class="log-entry" style="font-style: italic; color: var(--text-muted);">No recent events</div>'
+    html += '</div>'
+    st.markdown(html, unsafe_allow_html=True)
     
-    log_html += "</div>"
-    phs['event_log'].markdown(log_html, unsafe_allow_html=True)
-
-    # 3. SYSTEM HEALTH
-    health = get_system_health()
-    phs['system_health'].markdown(f"""
-    <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; color: #8B949E;">
-        <div>🔌 WebSocket: <span style="color:#3FB950">{health['ws_status']}</span> ({health['ws_latency']}ms)</div>
-        <div>📡 Reconcile: {health['last_reconcile']}</div>
-        <div>💾 Database: <span style="color:#3FB950">{health['db_status']}</span></div>
-        <div>🤖 Router: {health['router_mode']}</div>
+    card_end()
+    
+    # System Health
+    card("SYSTEM HEALTH", "⬡")
+    
+    latency = health.get('ws_latency', 0)
+    uptime = health.get('uptime', '0h 0m')
+    
+    lat_pct = min(100, (100 - latency) if latency < 100 else 20)
+    lat_class = "" if latency < 50 else "warning" if latency < 100 else "danger"
+    
+    st.markdown(textwrap.dedent(f"""
+    <div class="health-panel">
+        <div class="health-metric">
+            <span class="health-label">UPTIME</span>
+            <span class="health-value">{uptime}</span>
+        </div>
+        <div class="health-metric">
+            <span class="health-label">LATENCY</span>
+            <span class="health-value">{latency} ms</span>
+            <div class="health-bar">
+                <div class="health-bar-fill {lat_class}" style="width: {lat_pct}%;"></div>
+            </div>
+        </div>
     </div>
-    """, unsafe_allow_html=True)
+    <div class="heartbeat-container">
+        <div class="heartbeat-line"></div>
+    </div>
+    <div style="display: flex; justify-content: space-between; margin-top: 8px; font-family: var(--font-mono); font-size: 0.7rem;">
+        <span style="color: var(--text-muted);">STATUS:</span>
+        <span style="color: #22c55e;">OPTIMAL</span>
+    </div>
+    """), unsafe_allow_html=True)
+    
+    card_end()
 
 # =============================================================================
-# FOOTER
+# MAIN
 # =============================================================================
-def render_footer():
-    """Bottom status bar."""
-    st.markdown("---")
-    
-    cols = st.columns([2, 1, 1, 1])
-    
-    with cols[0]:
-        is_testnet = getattr(settings, 'TESTNET', True)
-        st.caption(f"🚀 CreeptBaws v3.0 | Titan Command | {'TESTNET' if is_testnet else 'MAINNET'}")
-    
-    with cols[1]:
-        st.caption(f"Symbols: {', '.join(s.upper() for s in settings.TRADING_SYMBOLS[:3])}...")
-    
-    with cols[2]:
-        st.caption(f"Max Position: ${settings.MAX_POSITION_USD:,}")
-    
-    with cols[3]:
-        st.caption(f"Updated: {datetime.now().strftime('%H:%M:%S')}")
-
-# Removed @st.fragment decorators to use manual loop
-def render_header_fragment():
-    render_header()
-
-def render_center_fragment():
+# =============================================================================
+# MAIN EXECUTION
+# =============================================================================
+@st.fragment(run_every=2)
+def auto_update_fragment(header_ph, left_ph, center_ph, right_ph):
     metrics = get_metrics()
-    render_center_column(metrics)
-
-def render_right_fragment():
-    metrics = get_metrics()
-    render_right_column(metrics)
+    health = get_system_health()
+    sort_mode = st.session_state.get('trade_sort', "Newest")
+    
+    with header_ph.container():
+        render_header()
+        
+    with left_ph.container():
+        render_left_column(metrics, health)
+        
+    with center_ph.container():
+        render_center_column(metrics)
+        
+    with right_ph.container():
+        render_right_column(metrics, health, sort_mode)
 
 def main():
-    # Create a placeholder for the header at the very top
-    header_ph = st.empty()
-
-    # 1. LAYOUT SETUP (Runs once per script execution)
-    st.markdown("### 🛡️ CREEPTBAWS COMMAND")
+    # 1. Setup Layout (Once)
+    header_container = st.empty()
     
-    # Create main columns
-    col_left, col_center, col_right = st.columns([1, 2, 1])
+    col1, col2, col3 = st.columns([1, 2, 1])
     
-    # --- LEFT COLUMN (Controls & Account) ---
-    with col_left:
-        # Check cached metrics for initial render
-        metrics_init = get_metrics() 
-        health_init = get_system_health()
+    with col1:
+        left_container = st.empty()
+    
+    with col2:
+        center_container = st.empty()
         
-        # 1. Controls
-        render_controls(metrics_init, health_init)
-        
-        # 2. Account Stats Container
-        # Create a specific container for stats so we can update it without touching controls
-        stats_container = st.container()
-        account_phs = setup_account_stats(stats_container)
+    with col3:
+        # Static Controls
+        st.selectbox(
+            "Sort Trades", 
+            ["Newest", "Best PnL", "Worst PnL"], 
+            key="trade_sort",
+            label_visibility="collapsed"
+        )
+        right_container = st.empty()
 
-    # --- CENTER COLUMN (Charts & Strategy) ---
-    with col_center:
-        center_container = st.container()
-        center_phs = setup_center_column(center_container)
-        
-    # --- RIGHT COLUMN (Logs & Feed) ---
-    with col_right:
-        right_container = st.container()
-        right_phs = setup_right_column(right_container, metrics_init)
-
-    # 2. DATA UPDATE LOOP
-    # We use a placeholder for the "Health/Time" header to update it dynamically without shifting layout
-    # NOTE: render_header uses st.columns, which expands to full width.
-    # It should effectively replace the static header logic if we want dynamic time.
-    # But wait, st.markdown("### ...") is already rendered. 
-    # Let's put the header ABOVE title? Or below?
-    # The user is used to header at top.
-    
-    # Best practice: Create a placeholder at the VERY top of `main` (before markdown title), 
-    # but `main` is called where?
-    
-    # Let's use the `header_placeholder` passed from __main__ or defined here? No.
-    # We can create a NEW placeholder at top of main.
-    
-    # Move it to top? Streamlit renders sequentially.
-    # If we create `header_ph` here, it appears below `st.columns`.
-    # Layout order matters.
-    
-    # FIX: Move `st.markdown("### ...")` and columns AFTER `header_ph`.
-    
-    try:
-        # Streamlit Cloud/newer versions prefer st.rerun() or fragments. 
-        # But 'while True' is acceptable for a local dashboard if we handle interruptions.
-        while True:
-            # Fetch fresh data
-            metrics = get_metrics()
-            health = get_system_health()
-            
-            # Update Header safely
-            with header_ph.container():
-                render_header()
-            
-            # --- UPDATE UI ELEMENTS ---
-            update_account_stats(account_phs, metrics, health)
-            update_center_column(center_phs, metrics)
-            update_right_column(right_phs, metrics)
-            
-            time.sleep(1) # Faster update (1s) for clock
-            
-    except Exception:
-        # If user interacts, Streamlit raises an RerunException (internal) or just restarts.
-        # We catch generic to allow safe exit.
-        pass
+    # 2. Run Auto-Update Fragment in-place
+    # This will rerun every 2s, updating ONLY the containers above
+    auto_update_fragment(header_container, left_container, center_container, right_container)
 
 if __name__ == "__main__":
     main()

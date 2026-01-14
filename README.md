@@ -1,6 +1,14 @@
-# Titan HFT Bot 🚀
+# SHAI 👁️
 
-Hey there! Welcome to **Titan**, a high-frequency trading bot I built for crypto futures. It's designed to be fast, safe, and modular. I started this because I wanted something more robust than the standard "while True" loops you see in most tutorials.
+**Algorithmic Destiny through High-Frequency Trading.**
+
+# SERQET 🦂
+
+**Precision Strike. Absolute Protection.**
+
+Hey there! Welcome to **SERQET**, a high-frequency trading bot I built for crypto futures. Named after the Egyptian goddess of protection and scorpions, it embodies the dual nature of market making: aggressive precision (The Sting) and defensive risk management (The Cure).
+
+It features a dark, modern aesthetic with gold accents, symbolizing the hidden value it extracts from the volatility.
 
 This bot is fully async, uses a proper event architecture, and includes a real-time dashboard so you can actually see what's going on without staring at logs all day.
 

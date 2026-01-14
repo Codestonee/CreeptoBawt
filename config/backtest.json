@@ -1,0 +1,31 @@
+{
+  "environment": "backtest",
+  "debug": false,
+  "log_level": "INFO",
+  
+  "trading": {
+    "symbols": ["btcusdt", "ethusdt"],
+    "initial_capital": 10000.0,
+    "max_position_usd": 5000.0,
+    "maker_fee_bps": 2.0,
+    "taker_fee_bps": 5.0
+  },
+  
+  "strategy": {
+    "gamma": 0.1,
+    "kappa": 0.5,
+    "use_glt": false,
+    "enable_hmm_regime": true,
+    "enable_vpin": true
+  },
+  
+  "backtest": {
+    "data_source": "binance",
+    "cache_dir": "data/backtest_cache",
+    "spread_cost_bps": 5.0,
+    "impact_per_10k_usd": 2.0,
+    "simulate_latency_ms": 50,
+    "maker_fill_probability": 0.7,
+    "allow_lookahead": false
+  }
+}

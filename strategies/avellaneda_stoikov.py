@@ -17,7 +17,8 @@ from collections import deque
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 
-from core.events import MarketEvent, SignalEvent, FillEvent, RegimeEvent
+from core.events import MarketEvent, SignalEvent, FillEvent, RegimeEvent, FundingRateEvent
+from strategies.base import BaseStrategy
 from data.shadow_book import ShadowOrderBook
 from data.candle_provider import CandleProvider
 from config.settings import settings  # Import settings
@@ -101,7 +102,7 @@ def get_regime_spread_multiplier(regime: str) -> float:
     return regime_multipliers.get(regime, 1.0)
 
 
-class AvellanedaStoikovStrategy:
+class AvellanedaStoikovStrategy(BaseStrategy):
     """
     Avellaneda-Stoikov optimal market making strategy.
     
@@ -136,8 +137,7 @@ class AvellanedaStoikovStrategy:
         candle_provider: Optional[CandleProvider] = None,
         regime_supervisor: Optional[RegimeSupervisorHMM] = None
     ):
-        self.queue = event_queue
-        self.symbols = [s.lower() for s in (symbols or settings.TRADING_SYMBOLS)]
+        super().__init__(event_queue, symbols or settings.TRADING_SYMBOLS)
         self.base_quantity = base_quantity
         self.gamma = gamma
         self.max_inventory = max_inventory
@@ -153,6 +153,30 @@ class AvellanedaStoikovStrategy:
         # GLT Quote Engine (optional, enable via use_glt=True)
         self.use_glt = True  # GLT ENABLED!
         self.glt_engine = GLTQuoteEngine()
+        
+        # Configure to use enhanced theta calculation
+        self.glt_use_iterative_theta = getattr(settings, 'GLT_USE_ITERATIVE_THETA', True)
+        
+        # Initialize GLT params for each symbol
+        for sym in self.symbols:
+            glt_params = GLTParams(
+                A=getattr(settings, 'GLT_A', 10.0),
+                k=getattr(settings, 'GLT_K', 0.5),
+                gamma=getattr(settings, 'GLT_GAMMA', 0.1),
+                delta=0.001,
+                min_spread_bps=self.MIN_SPREAD_BPS
+            )
+            
+            self.glt_engine.set_params(
+                sym,
+                glt_params,
+                use_iterative_theta=self.glt_use_iterative_theta
+            )
+            
+            logger.info(
+                f"[{sym.upper()}] GLT initialized with "
+                f"{'iterative' if self.glt_use_iterative_theta else 'quadratic'} theta"
+            )
         
         # VPIN logging timer
         self._last_vpin_log: Dict[str, float] = {}
@@ -256,6 +280,22 @@ class AvellanedaStoikovStrategy:
         
         # Update volatility estimate (EWMA)
         self._update_volatility(symbol)
+
+        # Upgrade to iterative theta after warmup (one-time)
+        if (len(state['returns']) >= 50 and 
+            self.glt_use_iterative_theta and 
+            not state.get('theta_upgraded', False)):
+            
+            logger.info(f"[{symbol}] Upgrading to iterative theta (warmup complete)")
+            
+            glt_params = self.glt_engine.params.get(symbol)
+            if glt_params:
+                self.glt_engine._compute_theta_table_iterative(
+                    symbol,
+                    glt_params,
+                    volatility_estimate=state['volatility']
+                )
+                state['theta_upgraded'] = True
         
         # Check fill cooldown (prevent revenge trading)
         if time.time() - state['last_fill_time'] < self.FILL_COOLDOWN_SECONDS:
@@ -397,11 +437,9 @@ class AvellanedaStoikovStrategy:
             # Snapshot simple types
             snapshot = {
                 'volatility': state['volatility'],
-                'gamma': self.gamma,  # Added for dashboard visibility
+                'gamma': self.gamma,
                 'kappa': state['kappa'],
                 'regime': state['regime'],
-                # Convert deques to lists for JSON serialization
-                'returns': list(state['returns']),
                 'returns': list(state['returns']),
                 'fill_times': list(state['fill_times']),
                 'latency_last': state['latency_history'][-1] if state['latency_history'] else 0,
@@ -471,6 +509,43 @@ class AvellanedaStoikovStrategy:
             state['paused'] = False
             logger.info(f"[{symbol}] Resuming MM in {event.regime} regime")
     
+    def _check_underwater_position(
+        self,
+        symbol: str,
+        current_inventory: float,
+        current_price: float,
+        avg_entry_price: float
+    ) -> tuple[bool, float]:
+        """
+        Check if current position is significantly underwater.
+        
+        Returns:
+            (is_underwater, unrealized_pnl_pct)
+        """
+        if abs(current_inventory) < 0.001 or avg_entry_price <= 0:
+            return False, 0.0
+        
+        # Calculate unrealized PnL percentage
+        if current_inventory > 0:  # Long
+            pnl_pct = (current_price / avg_entry_price) - 1
+        else:  # Short
+            pnl_pct = (avg_entry_price / current_price) - 1
+        
+        # Thresholds from settings
+        warning_threshold = getattr(settings, 'POSITION_PNL_WARNING_PCT', -0.03)  # -3%
+        critical_threshold = getattr(settings, 'POSITION_PNL_CRITICAL_PCT', -0.05)  # -5%
+        
+        is_underwater = pnl_pct < critical_threshold
+        
+        if pnl_pct < warning_threshold:
+            logger.warning(
+                f"[{symbol.upper()}] Position underwater: "
+                f"{current_inventory:+.4f} @ ${avg_entry_price:.2f}, "
+                f"Mark: ${current_price:.2f}, PnL: {pnl_pct:.2%}"
+            )
+        
+        return is_underwater, pnl_pct
+
     async def _calculate_quote(self, symbol: str, mid_price: float) -> Optional[Quote]:
         """Calculate optimal bid/ask using Avellaneda-Stoikov."""
         
@@ -528,7 +603,56 @@ class AvellanedaStoikovStrategy:
             logger.debug(f"[{symbol}] Using local inventory (OM error: {e})")
             q = state['inventory']  # Fallback to local state
         
-        # Skip quoting the side that would increase inventory beyond limit
+        # ========== UNDERWATER POSITION CHECK (Death Spiral Prevention) ==========
+        # If position is significantly underwater, switch to emergency exit mode
+
+        if self._order_manager:
+            try:
+                position = await self._order_manager.get_position(symbol)
+                if position and abs(position.quantity) > 0.001:
+                    is_underwater, pnl_pct = self._check_underwater_position(
+                        symbol=symbol,
+                        current_inventory=position.quantity,
+                        current_price=true_mid,
+                        avg_entry_price=position.avg_entry_price
+                    )
+                    
+                    if is_underwater:
+                        logger.critical(
+                            f"🚨 [{symbol.upper()}] UNDERWATER POSITION DETECTED! "
+                            f"PnL: {pnl_pct:.2%} - EMERGENCY EXIT MODE"
+                        )
+                        
+                        # Calculate emergency exit price (aggressive but not stupid)
+                        if position.quantity > 0:  # Long - need to sell
+                            # Sell aggressively but within reason
+                            emergency_exit_price = true_mid * 0.998  # 0.2% below mid
+                            emergency_qty = abs(position.quantity)
+                            
+                            return Quote(
+                                symbol=symbol,
+                                bid_price=0,  # Don't buy more!
+                                ask_price=emergency_exit_price,
+                                bid_size=0,
+                                ask_size=emergency_qty,
+                                timestamp=time.time()
+                            )
+                            
+                        else:  # Short - need to buy
+                            emergency_exit_price = true_mid * 1.002  # 0.2% above mid
+                            emergency_qty = abs(position.quantity)
+                            
+                            return Quote(
+                                symbol=symbol,
+                                bid_price=emergency_exit_price,
+                                ask_price=0,  # Don't sell more!
+                                bid_size=emergency_qty,
+                                ask_size=0,
+                                timestamp=time.time()
+                            )
+                            
+            except Exception as e:
+                logger.warning(f"[{symbol}] Failed to check underwater position: {e}")
         # Calculate USD-based max units for this symbol (dynamic per symbol price)
         max_units = settings.MAX_POSITION_USD / true_mid if true_mid > 0 else self.max_inventory
         
@@ -589,23 +713,9 @@ class AvellanedaStoikovStrategy:
             optimal_half_spread = optimal_spread / 2
             reservation_price = true_mid  # Will be adjusted by skew below
 
-        # 2. TANH SKEW (Aggressive Inventory Management) - FIXED TO BE ASYMMETRIC & CALMER
-        # Apply skew to Reservation Price to shift quotes away from heavy side
-        max_units = settings.MAX_POSITION_USD / true_mid if true_mid > 0 else 10.0
-        
-        # FIX: Reduced lambda from 2.5 to 1.0 (Less aggressive)
-        lambda_inv = 1.0
-        inventory_pct = q / max_units
-        skew_factor = math.tanh(lambda_inv * inventory_pct)
-        
-        # FIX: Standardized Reservation Price Shift (Smooth & Classic)
-        # Instead of hacking margins with 0.2 multipliers, we shift the entire bracket.
-        # If LONG (skew > 0) -> Shift price DOWN -> Lower Bid (Buy less), Lower Ask (Sell faster)
-        # If SHORT (skew < 0) -> Shift price UP -> Higher Bid (Buy faster), Higher Ask (Sell less)
-        
-        skew_intensity = 1.0  # 100% of half-spread at max skew
-        reservation_shift = -skew_factor * optimal_half_spread * skew_intensity
-        reservation_price += reservation_shift
+        # 2. TANH SKEW - DISABLED HERE (Applied later as Asymmetric Spreads)
+        # Old code removed to avoid double application.
+        pass
 
         # We remove the old manual adjustments
         bid_adjustment = 0.0
@@ -646,9 +756,53 @@ class AvellanedaStoikovStrategy:
              logger.debug(f"[{symbol}] Volatility Widening: {spread_multiplier:.2f}x (VPIN {current_vpin:.2f})")
         final_half_spread *= spread_multiplier
         
-        # Apply asymmetric adjustments
-        bid_price = reservation_price - final_half_spread + bid_adjustment
-        ask_price = reservation_price + final_half_spread + ask_adjustment
+        # ========== INVENTORY SKEW (FIXED - NO RESERVATION SHIFT) ==========
+        # 
+        # OLD BROKEN LOGIC (Commented out):
+        # reservation_shift = -skew_factor * optimal_half_spread * skew_intensity
+        # reservation_price += reservation_shift  # ← This caused bid/ask on same side!
+        #
+        # NEW LOGIC: Asymmetric spread widening instead of reservation shift
+        # - Long position: Widen bid (discourage buying), narrow ask (encourage selling)
+        # - Short position: Narrow bid (encourage buying), widen ask (discourage selling)
+
+        # Calculate inventory pressure
+        max_units = settings.MAX_POSITION_USD / true_mid if true_mid > 0 else 10.0
+        lambda_inv = 1.0  # Skew strength (1.0 = moderate)
+        inventory_pct = q / max_units
+        skew_factor = math.tanh(lambda_inv * inventory_pct)  # Range: [-1, 1]
+
+        # Asymmetric spread adjustment
+        # Max adjustment = 2x at extreme inventory
+        max_spread_multiplier = 2.0
+
+        if skew_factor > 0:  # Long position (q > 0)
+            # Widen bid (less aggressive buying), narrow ask (more aggressive selling)
+            bid_spread_mult = 1.0 + (skew_factor * max_spread_multiplier)
+            ask_spread_mult = 1.0 - (skew_factor * 0.5)  # Half the narrowing
+            
+        elif skew_factor < 0:  # Short position (q < 0)
+            # Narrow bid (more aggressive buying), widen ask (less aggressive selling)
+            bid_spread_mult = 1.0 - (abs(skew_factor) * 0.5)
+            ask_spread_mult = 1.0 + (abs(skew_factor) * max_spread_multiplier)
+            
+        else:  # Neutral
+            bid_spread_mult = 1.0
+            ask_spread_mult = 1.0
+
+        # Apply asymmetric spreads (around un-shifted mid)
+        reservation_price = true_mid  # Keep reservation at mid!
+        bid_half_spread = final_half_spread * bid_spread_mult
+        ask_half_spread = final_half_spread * ask_spread_mult
+
+        # Calculate final quotes
+        bid_price = reservation_price - bid_half_spread
+        ask_price = reservation_price + ask_half_spread
+
+        logger.debug(
+            f"[{symbol}] Skew: {skew_factor:+.2f} | "
+            f"Bid spread: {bid_spread_mult:.2f}x, Ask spread: {ask_spread_mult:.2f}x"
+        )
         
         # --- CRITICAL FIX: Fee/Profit Floor Enforcement ---
         # Skew can push prices too close to mid, eating into fees/profit.
@@ -852,15 +1006,14 @@ class AvellanedaStoikovStrategy:
         
         state['volatility'] = math.sqrt(variance)
     
-    def _update_kappa(self, symbol: str):
-        """Estimate order arrival rate from fill history."""
+    def _estimate_kappa_from_arrivals(self, symbol: str) -> float:
+        """Estimate order arrival rate from fill history (used as baseline)."""
         state = self._state[symbol]
         fill_times = list(state['fill_times'])
         
         if len(fill_times) < 3:
-            return
+            return state['kappa']  # Return current kappa if insufficient data
         
-        # Calculate average inter-arrival time
         intervals = [
             fill_times[i] - fill_times[i-1]
             for i in range(1, len(fill_times))
@@ -869,7 +1022,8 @@ class AvellanedaStoikovStrategy:
         avg_interval = sum(intervals) / len(intervals)
         
         if avg_interval > 0:
-            state['kappa'] = 1 / avg_interval
+            return 1 / avg_interval
+        return state['kappa']
     
     def _should_refresh_quote(self, symbol: str, current_price: float) -> bool:
         """Check if quote should be refreshed (hysteresis, not timer)."""

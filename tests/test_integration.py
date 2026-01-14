@@ -19,13 +19,16 @@ import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 from dataclasses import dataclass
 from typing import Dict, Optional
+from datetime import datetime
 
 # System imports
 from core.events import MarketEvent, SignalEvent, FillEvent, RegimeEvent
 from strategies.avellaneda_stoikov import AvellanedaStoikovStrategy
-from execution.order_manager import OrderManager, OrderState, Position
+from execution.order_manager import OrderManager, OrderState
+from execution.position_tracker import Position
 from execution.reconciliation import ReconciliationService, DiscrepancyType
 from risk_engine.risk_manager import RiskManager
+import config.settings as settings
 
 
 # ==================== FIXTURES ====================
@@ -49,10 +52,36 @@ def event_queue():
 
 
 @pytest.fixture
-def order_manager(temp_db):
-    """OrderManager with isolated DB."""
-    return OrderManager(db_path=temp_db)
+def mock_exchange():
+    """Mock exchange client."""
+    client = MagicMock()
+    # Async methods need AsyncMock
+    client.create_order = AsyncMock(return_value={'orderId': '123456'})
+    client.cancel_order = AsyncMock()
+    return client
 
+@pytest.fixture
+def order_manager(temp_db, mock_exchange):
+    """OrderManager with isolated DB and dependencies."""
+    # Mock dependencies
+    db_manager = MagicMock()
+    # Configure db_manager async methods
+    db_manager.insert_order = AsyncMock()
+    db_manager.update_order = AsyncMock()
+    db_manager.submit_write_task = MagicMock() # Synchronous method
+    
+    # Real PositionTracker with mock exchange
+    from execution.position_tracker import PositionTracker
+    position_tracker = PositionTracker(mock_exchange, db_manager)
+    position_tracker._positions = {} # Ensure empty
+    position_tracker._is_synced = True # Fake sync
+    
+    # Mock RiskGatekeeper
+    gatekeeper = MagicMock()
+    gatekeeper.validate_order = AsyncMock(return_value=MagicMock(is_allowed=True))
+    gatekeeper.update_pnl = MagicMock()
+    
+    return OrderManager(mock_exchange, db_manager, position_tracker, gatekeeper)
 
 @pytest.fixture
 def mock_shadow_book():
@@ -65,8 +94,8 @@ def mock_shadow_book():
 
 
 @pytest.fixture
-def strategy(event_queue, mock_shadow_book):
-    """Avellaneda-Stoikov strategy for testing."""
+def strategy(event_queue, mock_shadow_book, order_manager):
+    """Avellaneda-Stoikov strategy for testing (Depends on order_manager to init global)."""
     return AvellanedaStoikovStrategy(
         event_queue=event_queue,
         symbols=['btcusdt'],
@@ -92,22 +121,21 @@ class TestOrderManagerIntegration:
     async def test_order_lifecycle_happy_path(self, order_manager):
         """Test: Order creation → Submit → Fill → Position update."""
         # 1. Create order
-        order = await order_manager.create_order(
+        order = await order_manager.submit_order(
             symbol='btcusdt',
-            side='BUY',
             quantity=0.01,
-            price=50000.0
+            price=50000.0,
+            side='BUY',
+            order_type='LIMIT'
         )
         
-        assert order.state == OrderState.PENDING_SUBMIT.value
+        # Order transitions to SUBMITTED immediately upon successful mock return
+        assert order.state == OrderState.SUBMITTED.value
         assert order.client_order_id != ""
         
-        # 2. Mark as submitted
-        order = await order_manager.mark_submitted(
-            order.client_order_id,
-            exchange_order_id="123456"
-        )
-        assert order.state == OrderState.SUBMITTED.value
+        # 2. Mark as submitted (Already done by submit_order, but we can verify params)
+        # Verify exchange ID was set from mock return
+        assert order.exchange_order_id == "123456"
         
         # 3. Process fill
         order = await order_manager.process_fill(
@@ -128,11 +156,11 @@ class TestOrderManagerIntegration:
     @pytest.mark.asyncio
     async def test_partial_fill_handling(self, order_manager):
         """Test: Order with multiple partial fills."""
-        order = await order_manager.create_order(
+        order = await order_manager.submit_order(
             symbol='btcusdt',
-            side='BUY',
             quantity=1.0,
-            price=50000.0
+            price=50000.0,
+            side='BUY'
         )
         await order_manager.mark_submitted(order.client_order_id, "12345")
         
@@ -160,33 +188,49 @@ class TestOrderManagerIntegration:
         assert abs(order.avg_fill_price - expected_avg) < 0.01
     
     @pytest.mark.asyncio
-    async def test_position_sync_from_exchange(self, order_manager):
+    async def test_position_sync_from_exchange(self, order_manager, mock_exchange):
         """Test: Force sync position from exchange."""
-        # Simulate local vs exchange mismatch
-        await order_manager.set_position_from_exchange(
-            symbol='btcusdt',
-            quantity=0.5,
-            entry_price=48000.0
-        )
+        # 1. Setup Mock Exchange Return
+        mock_exchange.get_positions = AsyncMock(return_value=[
+            {
+                'symbol': 'BTCUSDT',
+                'quantity': '0.5',
+                'avgPrice': '48000.0',
+                'unrealizedPnl': '100.0',
+                'positionAmt': '0.5',
+                'entryPrice': '48000.0'
+            }
+        ])
+
+        # 2. Trigger Sync
+        await order_manager.position_tracker.force_sync_with_exchange()
         
+        # 3. Verify
         position = await order_manager.get_position('btcusdt')
         assert position.quantity == 0.5
         assert position.avg_entry_price == 48000.0
-        assert position.last_reconciled_at > 0
+        assert position.exchange_confirmed == True
     
     @pytest.mark.asyncio
-    async def test_clear_all_positions(self, order_manager):
-        """Test: Clear all positions."""
-        # Create positions
-        await order_manager.set_position_from_exchange('btcusdt', 0.5, 50000)
-        await order_manager.set_position_from_exchange('ethusdt', 2.0, 3000)
+    async def test_sync_clears_phantom_positions(self, order_manager, mock_exchange):
+        """Test: Local positions not on exchange should be cleared."""
+        # 1. Setup Phantom Positions (exist locally but not on exchange)
+        from execution.position_tracker import Position
+        from datetime import datetime
         
-        # Clear
-        count = await order_manager.clear_all_positions()
-        assert count == 2
+        order_manager.position_tracker._positions['btcusdt'] = Position(
+            symbol='btcusdt', quantity=0.5, avg_entry_price=50000, 
+            unrealized_pnl=0, last_update=datetime.now()
+        )
         
-        # Verify cleared
-        positions = await order_manager.get_all_positions()
+        # 2. Mock Exchange returns EMPTY list
+        mock_exchange.get_positions = AsyncMock(return_value=[])
+        
+        # 3. Sync
+        await order_manager.position_tracker.force_sync_with_exchange()
+        
+        # 4. Verify cleared
+        positions = await order_manager.position_tracker.get_all_positions()
         assert len(positions) == 0
 
 
@@ -199,11 +243,11 @@ class TestReconciliationIntegration:
     async def test_ghost_order_no_trades_gets_canceled(self, order_manager, temp_db):
         """Test: Ghost order with no trades → CANCELED."""
         # Create a "submitted" order locally
-        order = await order_manager.create_order(
+        order = await order_manager.submit_order(
             symbol='btcusdt',
-            side='BUY',
             quantity=0.1,
-            price=50000.0
+            price=50000.0,
+            side='BUY'
         )
         await order_manager.mark_submitted(order.client_order_id, "fake_exchange_id")
         
@@ -235,11 +279,11 @@ class TestReconciliationIntegration:
     async def test_zombie_order_partial_fill_gets_canceled(self, order_manager):
         """Test: Partially filled ghost order → Process fills + CANCEL remainder."""
         # Create order for 1 BTC
-        order = await order_manager.create_order(
+        order = await order_manager.submit_order(
             symbol='btcusdt',
-            side='BUY',
             quantity=1.0,
-            price=50000.0
+            price=50000.0,
+            side='BUY'
         )
         await order_manager.mark_submitted(order.client_order_id, "fake_id")
         
@@ -278,16 +322,18 @@ class TestReconciliationIntegration:
             testnet=True
         )
         recon.order_manager = order_manager
-        
-        # Mock exchange positions
-        recon._fetch_positions = AsyncMock(return_value={
-            'BTCUSDT': {'positionAmt': '0.5', 'entryPrice': '50000'},
-            'ETHUSDT': {'positionAmt': '2.0', 'entryPrice': '3000'}
-        })
-        
+    
+        # Mock exchange positions via OrderManager's exchange client (PositionTracker uses this)
+        # Ensure it's AsyncMock
+        # PositionTracker requires 'quantity' (consistent with normalized Position model)
+        order_manager.exchange.get_positions = AsyncMock(return_value=[
+            {'symbol': 'BTCUSDT', 'positionAmt': '0.5', 'entryPrice': '50000', 'unrealizedProfit': '10.0', 'quantity': '0.5', 'avgPrice': '50000'},
+            {'symbol': 'ETHUSDT', 'positionAmt': '2.0', 'entryPrice': '3000', 'unrealizedProfit': '5.0', 'quantity': '2.0', 'avgPrice': '3000'}
+        ])
+    
         # Run sync
         results = await recon.force_sync_positions()
-        
+    
         assert len(results['synced']) == 2
         assert len(results['errors']) == 0
         
@@ -308,7 +354,10 @@ class TestPnLCalculation:
     async def test_long_position_profit(self, order_manager):
         """Test: Buy low, sell high → Positive PnL."""
         # Set initial position: Long 0.5 BTC @ $50,000
-        await order_manager.set_position_from_exchange('btcusdt', 0.5, 50000)
+        order_manager.position_tracker._positions['btcusdt'] = Position(
+            symbol='btcusdt', quantity=0.5, avg_entry_price=50000, 
+            unrealized_pnl=0, last_update=datetime.now()
+        )
         
         pos = await order_manager.get_position('btcusdt')
         
@@ -324,7 +373,10 @@ class TestPnLCalculation:
     async def test_short_position_profit(self, order_manager):
         """Test: Sell high, buy low → Positive PnL."""
         # Set initial position: Short 0.5 BTC @ $50,000 (negative quantity)
-        await order_manager.set_position_from_exchange('btcusdt', -0.5, 50000)
+        order_manager.position_tracker._positions['btcusdt'] = Position(
+            symbol='btcusdt', quantity=-0.5, avg_entry_price=50000, 
+            unrealized_pnl=0, last_update=datetime.now()
+        )
         
         pos = await order_manager.get_position('btcusdt')
         
@@ -340,14 +392,17 @@ class TestPnLCalculation:
     async def test_position_flip_pnl(self, order_manager):
         """Test: Long → Oversell → Short transition."""
         # Initial long position
-        await order_manager.set_position_from_exchange('btcusdt', 0.5, 50000)
+        order_manager.position_tracker._positions['btcusdt'] = Position(
+            symbol='btcusdt', quantity=0.5, avg_entry_price=50000, 
+            unrealized_pnl=0, last_update=datetime.now()
+        )
         
         # Create sell order that flips to short
-        order = await order_manager.create_order(
+        order = await order_manager.submit_order(
             symbol='btcusdt',
-            side='SELL',
-            quantity=1.0,  # Sell more than position
-            price=51000.0
+            quantity=1.0,
+            price=51000.0,
+            side='SELL'
         )
         await order_manager.mark_submitted(order.client_order_id, "123")
         await order_manager.process_fill(order.client_order_id, 1.0, 51000.0)
@@ -391,30 +446,33 @@ class TestStrategySignalFlow:
     @pytest.mark.asyncio
     async def test_inventory_affects_quote_sizes(self, strategy, event_queue):
         """Test: Long inventory → Smaller bid, bigger ask."""
-        # Set positive inventory (long) via internal state
-        strategy._state['btcusdt']['inventory'] = 0.5
+        # Patch settings to allow large inventory without triggering reduce-only
+        # settings is the module, settings.settings is the instance
+        with patch.object(settings.settings, 'MAX_POSITION_USD', 1000000.0):
+            # Set positive inventory (long) via internal state
+            strategy._state['btcusdt']['inventory'] = 0.5
         
-        tick = MarketEvent(
-            exchange='binance',
-            symbol='btcusdt',
-            price=50000.0,
-            volume=100.0
-        )
+            tick = MarketEvent(
+                exchange='binance',
+                symbol='btcusdt',
+                price=50000.0,
+                volume=100.0
+            )
         
-        await strategy.on_tick(tick)
+            await strategy.on_tick(tick)
         
-        signals = []
-        while not event_queue.empty():
-            event = await event_queue.get()
-            if isinstance(event, SignalEvent):
-                signals.append(event)
+            signals = []
+            while not event_queue.empty():
+                event = await event_queue.get()
+                if isinstance(event, SignalEvent):
+                    signals.append(event)
         
-        bid_signal = next((s for s in signals if s.side == 'BUY'), None)
-        ask_signal = next((s for s in signals if s.side == 'SELL'), None)
+            bid_signal = next((s for s in signals if s.side == 'BUY'), None)
+            ask_signal = next((s for s in signals if s.side == 'SELL'), None)
         
-        # With positive inventory, ask should be larger/more aggressive
-        assert ask_signal is not None
-        assert bid_signal is not None
+            # With positive inventory, ask should be larger/more aggressive
+            assert ask_signal is not None
+            assert bid_signal is not None
     
     @pytest.mark.asyncio
     async def test_fill_updates_strategy_inventory(self, strategy):
@@ -490,11 +548,11 @@ class TestEndToEndFlow:
         assert signal is not None
         
         # 4. Create order in OrderManager
-        order = await order_manager.create_order(
+        order = await order_manager.submit_order(
             symbol=signal.symbol,
-            side=signal.side,
             quantity=signal.quantity,
-            price=signal.price
+            price=signal.price,
+            side=signal.side
         )
         
         # 5. Simulate exchange acceptance

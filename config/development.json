@@ -1,0 +1,39 @@
+{
+  "environment": "development",
+  "debug": true,
+  "log_level": "DEBUG",
+  
+  "exchange": {
+    "testnet": true,
+    "request_timeout": 10,
+    "recv_window": 5000
+  },
+  
+  "trading": {
+    "symbols": ["btcusdt"],
+    "initial_capital": 1000.0,
+    "max_position_usd": 500.0,
+    "max_total_exposure_usd": 800.0,
+    "max_leverage": 1,
+    "enable_auto_hedge": false
+  },
+  
+  "strategy": {
+    "gamma": 0.1,
+    "kappa": 0.5,
+    "use_glt": false,
+    "enable_hmm_regime": false,
+    "enable_vpin": true
+  },
+  
+  "monitoring": {
+    "enable_health_monitor": true,
+    "health_check_interval": 60,
+    "enable_alerts": false
+  },
+  
+  "database": {
+    "db_path": "data/dev_trading.db",
+    "connection_pool_size": 3
+  }
+}

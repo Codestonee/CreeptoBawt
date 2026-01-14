@@ -93,25 +93,30 @@ class OrderManager:
     Coordinator between:
     - Strategies (Submit orders)
     - Risk Gatekeeper (Validate orders)
+    - Risk Manager (Kill switch enforcement)
     - Position Tracker (Update state)
     - Database Manager (Persist state)
     """
     
-    def __init__(self, exchange_client, db_manager: DatabaseManager, position_tracker: PositionTracker, risk_gatekeeper: RiskGatekeeper):
+    def __init__(self, exchange_client, db_manager: DatabaseManager, position_tracker: PositionTracker, risk_gatekeeper: RiskGatekeeper, risk_manager=None):
         self.exchange = exchange_client
         self.db = db_manager
         self.position_tracker = position_tracker
         self.risk_gatekeeper = risk_gatekeeper
+        self.risk_manager = risk_manager  # For kill switch enforcement
         self._event_store = get_event_store()
         
         # In-memory order cache (for fast lookup)
-        # In production, might want to limit size or use LRU
         self._orders: Dict[str, Order] = {}
+        
+        # Order timeout tracking
+        self._order_timeouts: Dict[str, float] = {}  # client_order_id -> created_time
+        self.order_timeout_sec = 300  # 5 minutes default
         
         # Register as global instance
         _set_global_instance(self)
         
-        logger.info("✅ OrderManager initialized")
+        logger.info("OrderManager initialized")
     
     async def initialize(self):
         """Initialize the order manager."""
@@ -137,13 +142,25 @@ class OrderManager:
         Submit order with risk checks and full lifecycle tracking.
         """
         try:
-            # 1. RISK CHECK (CRITICAL)
+            # 0. KILL SWITCH CHECK (RiskManager state enforcement)
+            if self.risk_manager:
+                if self.risk_manager.kill_switch_triggered:
+                    logger.critical("ORDER BLOCKED: RiskManager kill switch is triggered")
+                    return None
+                    
+                from risk_engine.risk_manager import RiskState
+                if hasattr(self.risk_manager, 'current_state'):
+                    if self.risk_manager.current_state == RiskState.STOP:
+                        logger.critical("ORDER BLOCKED: RiskManager in STOP state")
+                        return None
+            
+            # 1. RISK CHECK via RiskGatekeeper
             risk_result = await self.risk_gatekeeper.validate_order(
                 symbol, quantity, price, side
             )
             
             if not risk_result.is_allowed:
-                logger.warning(f"❌ Order REJECTED by risk: {risk_result.reason}")
+                logger.warning(f"Order REJECTED by risk: {risk_result.reason}")
                 return None
             
             # 2. PROPOSE ORDER (Local State)
@@ -234,22 +251,135 @@ class OrderManager:
             error_message=error_message
         )
     
+    async def register_existing_order(
+        self,
+        client_order_id: str,
+        exchange_order_id: str,
+        symbol: str,
+        side: str,
+        quantity: float,
+        price: float,
+        order_type: str = "LIMIT",
+        filled_quantity: float = 0.0
+    ) -> Order:
+        """
+        Register an existing order (from exchange or router).
+        Used during:
+        1. Startup bootstrap (existing exchange orders)
+        2. Router repricing (new order IDs generated mid-chase)
+        
+        Args:
+            client_order_id: Our client order ID
+            exchange_order_id: Exchange's order ID
+            symbol: Trading pair
+            side: BUY or SELL
+            quantity: Order quantity
+            price: Order price
+            order_type: LIMIT, MARKET, etc.
+            filled_quantity: Already filled quantity (if partial)
+        
+        Returns:
+            Registered Order object
+        """
+        # Check if already exists
+        existing = self._orders.get(client_order_id)
+        if existing:
+            logger.debug(f"Order {client_order_id} already registered")
+            return existing
+        
+        # Create order record
+        order = Order(
+            client_order_id=client_order_id,
+            exchange_order_id=exchange_order_id,
+            trace_id=f"registered_{client_order_id[-8:]}",
+            symbol=symbol.lower(),
+            side=side.upper(),
+            order_type=order_type,
+            time_in_force="GTC",  # Assume GTC for existing
+            quantity=quantity,
+            filled_quantity=filled_quantity,
+            remainder_quantity=quantity - filled_quantity,
+            price=price,
+            state=OrderState.SUBMITTED.value,  # Already on exchange
+            created_at=time.time(),
+            updated_at=time.time()
+        )
+        
+        # Add to cache
+        self._orders[client_order_id] = order
+        
+        # Persist to DB (async, non-blocking)
+        try:
+            await self.db.insert_order({
+                'client_order_id': order.client_order_id,
+                'exchange_order_id': exchange_order_id,
+                'trace_id': order.trace_id,
+                'symbol': order.symbol,
+                'side': order.side,
+                'order_type': order.order_type,
+                'time_in_force': order.time_in_force,
+                'quantity': order.quantity,
+                'price': order.price,
+                'state': order.state,
+                'created_at': order.created_at,
+                'updated_at': order.updated_at
+            })
+        except Exception as e:
+            logger.warning(f"Failed to persist registered order {client_order_id}: {e}")
+        
+        logger.info(
+            f"📝 Registered existing order: {client_order_id} "
+            f"({side} {quantity} {symbol.upper()} @ ${price:.2f})"
+        )
+        
+        return order
+
+
+    async def get_stuck_orders(self, timeout_seconds: float = 300) -> List[str]:
+        """
+        Get list of orders stuck in SUBMITTED state for too long.
+        """
+        now = time.time()
+        stuck = []
+        
+        for order in self._orders.values():
+            if order.state != OrderState.SUBMITTED.value:
+                continue
+            
+            age = now - order.created_at
+            if age > timeout_seconds:
+                stuck.append(order.client_order_id)
+        
+        return stuck
+    
     async def process_fill(
         self,
         client_order_id: str,
         filled_qty: float,
         fill_price: float,
         commission: float = 0.0,
-        pnl: float = 0.0
+        pnl: float = 0.0,
+        max_slippage_pct: float = 0.05  # 5% default max slippage
     ) -> Optional[Order]:
         """
-        Process a fill event.
+        Process a fill event with slippage validation.
         Updates Order State AND Position Tracker.
         """
         order = self._orders.get(client_order_id)
         if not order:
             logger.warning(f"Process fill: Order not found {client_order_id}")
             return None
+        
+        # SLIPPAGE VALIDATION (for limit orders with known price)
+        if order.price > 0 and order.order_type == 'LIMIT':
+            slippage = abs(fill_price - order.price) / order.price
+            if slippage > max_slippage_pct:
+                logger.error(
+                    f"EXCESSIVE SLIPPAGE: {client_order_id} expected ${order.price:.4f}, "
+                    f"got ${fill_price:.4f} ({slippage*100:.2f}%)"
+                )
+                # Log but don't reject - the fill already happened
+                # This serves as an alert for investigation
         
         # 1. Update Order State
         new_filled = order.filled_quantity + filled_qty
@@ -412,3 +542,47 @@ class OrderManager:
         """Get total value of pending orders."""
         open_orders = await self.get_open_orders(symbol)
         return sum((o.quantity - o.filled_quantity) * o.price for o in open_orders)
+
+    async def check_order_timeouts(self) -> List[str]:
+        """
+        Check for orders that have been in SUBMITTED state too long.
+        Returns list of canceled order IDs.
+        """
+        now = time.time()
+        timed_out_orders = []
+        
+        for order in list(self._orders.values()):
+            if order.state != OrderState.SUBMITTED.value:
+                continue
+            
+            age = now - order.created_at
+            if age > self.order_timeout_sec:
+                logger.warning(
+                    f"Order {order.client_order_id} timed out after {age:.0f}s "
+                    f"(limit: {self.order_timeout_sec}s) - canceling"
+                )
+                try:
+                    success = await self.cancel_order(order.client_order_id)
+                    if success:
+                        timed_out_orders.append(order.client_order_id)
+                except Exception as e:
+                    logger.error(f"Failed to cancel timed out order: {e}")
+        
+        if timed_out_orders:
+            logger.info(f"Canceled {len(timed_out_orders)} timed out orders")
+        
+        return timed_out_orders
+
+    def get_total_exposure(self) -> float:
+        """Get total exposure across all positions (for RiskGatekeeper)."""
+        if not hasattr(self, 'position_tracker') or not self.position_tracker:
+            return 0.0
+        
+        try:
+            total = 0.0
+            if hasattr(self.position_tracker, 'positions'):
+                for pos in self.position_tracker.positions.values():
+                    total += abs(pos.quantity * pos.avg_entry_price)
+            return total
+        except Exception:
+            return 0.0
