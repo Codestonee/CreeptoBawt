@@ -1,0 +1,295 @@
+/* 
+   SERQET COMMAND CENTER -> MATTE BLACK / OBSIDIAN THEME
+   Style: Professional, Minimalist, High-Contrast
+*/
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+:root {
+    /* Colors - Matte Black Palette */
+    --bg-depth: #000000;
+    --bg-surface: #111111;
+    --bg-highlight: #1a1a1a;
+    
+    --border: #333333;
+    --border-subtle: #222222;
+
+    /* Typography */
+    --text-primary: #ffffff;
+    --text-secondary: #a1a1aa; /* Zinc-400 */
+    --text-tertiary: #52525b;  /* Zinc-600 */
+
+    /* Functional Colors */
+    --accent: #ffffff;         /* White accent for active states */
+    --success: #00e676;        /* Bright Green */
+    --danger: #ff1744;         /* Bright Red */
+    --warning: #ffbf00;        /* Amber */
+    --info: #2979ff;           /* Blue */
+
+    /* Dimensions */
+    --radius-sm: 4px;
+    --radius-md: 8px;
+    --pad: 20px;
+    --gap: 16px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; outline: none; }
+
+body {
+    background-color: var(--bg-depth);
+    color: var(--text-primary);
+    font-family: 'Inter', sans-serif;
+    height: 100vh;
+    overflow: hidden;
+    font-size: 13px; /* Slightly smaller, more professional */
+    -webkit-font-smoothing: antialiased;
+}
+
+/* SCROLLBAR - Minimal */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: var(--bg-depth); }
+::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+
+/* LAYOUT */
+.app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    padding: var(--gap);
+    gap: var(--gap);
+    max-width: 2000px;
+    margin: 0 auto;
+}
+
+/* HEADER - Minimalist Bar */
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: var(--bg-surface);
+    padding: 12px 20px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+}
+
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.brand__logo { width: 24px; height: 24px; fill: var(--text-primary); }
+
+.brand__title {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 1.1rem;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    color: var(--text-primary);
+}
+
+.brand__subtitle {
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-left: 8px;
+    padding-left: 8px;
+    border-left: 1px solid var(--border);
+}
+
+/* GRID */
+.layout {
+    display: grid;
+    grid-template-columns: 300px 1fr 340px; /* Precise columns */
+    gap: var(--gap);
+    flex: 1;
+    min-height: 0;
+}
+
+.col {
+    display: flex;
+    flex-direction: column;
+    gap: var(--gap);
+    min-height: 0;
+}
+
+/* CARDS - Matte Finish */
+.card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: var(--pad);
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    /* No shadows for flat matte look */
+}
+
+.card--tall { flex: 1; min-height: 0; }
+
+.card__header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border-subtle);
+}
+
+.card__title {
+    font-family: 'Inter', sans-serif;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* KPIs - Clean Data */
+.kpi {
+    margin-bottom: 16px;
+}
+
+.kpi-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+}
+
+.kpi__label {
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+    text-transform: uppercase;
+}
+
+.kpi__value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 1.4rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    letter-spacing: -0.5px;
+}
+
+.val-lg { font-size: 1.8rem; }
+.val-sm { font-size: 1.1rem; }
+
+.text-success { color: var(--success); }
+.text-danger { color: var(--danger); }
+.text-dim { color: var(--text-secondary); }
+
+/* CONTROLS - Tactile */
+.btn {
+    background: var(--bg-highlight);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    padding: 10px 16px;
+    border-radius: var(--radius-sm);
+    font-size: 0.75rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.1s;
+    text-transform: uppercase;
+}
+
+.btn:hover { background: #252525; border-color: #444; }
+.btn:active { transform: translateY(1px); }
+
+.btn--danger { background: rgba(255, 23, 68, 0.1); border-color: rgba(255, 23, 68, 0.3); color: var(--danger); }
+.btn--danger:hover { background: rgba(255, 23, 68, 0.2); }
+
+/* TABS - Underline Style (Professional) */
+.tabs {
+    display: flex;
+    gap: 20px;
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+    padding: 0 10px;
+}
+
+.tabs__btn {
+    background: none;
+    border: none;
+    padding: 12px 0;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    font-weight: 500;
+    cursor: pointer;
+    position: relative;
+    transition: color 0.2s;
+}
+
+.tabs__btn:hover { color: var(--text-primary); }
+.tabs__btn.active { color: var(--text-primary); }
+.tabs__btn.active::after {
+    content: ''; position: absolute; bottom: -1px; left: 0; width: 100%; height: 2px; background: var(--text-primary);
+}
+
+/* TABLES & LISTS - Dense */
+.list { overflow-y: auto; }
+
+.list__item {
+    display: grid;
+    grid-template-columns: 40px 1fr auto;
+    align-items: center;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border-subtle);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.8rem;
+    transition: background 0.1s;
+}
+
+.list__item:hover { background: var(--bg-highlight); }
+.list__item:last-child { border-bottom: none; }
+
+.badge {
+    padding: 2px 0;
+    font-size: 0.7rem;
+    font-weight: 700;
+}
+.badge--buy { color: var(--success); }
+.badge--sell { color: var(--danger); }
+
+/* LOGS - Terminal Style */
+.log-panel {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column-reverse; /* Bottom up */
+    background: #050505; /* Darker than card */
+    padding: 12px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-subtle);
+    height: 100%;
+}
+
+.log-line {
+    padding: 2px 0;
+    display: flex;
+    gap: 8px;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+.log-line span { opacity: 0.9; }
+
+/* UTILS */
+select {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    padding: 6px 12px;
+    border-radius: var(--radius-sm);
+    outline: none;
+    font-size: 0.8rem;
+}
+
+.status-indicator {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 0.75rem; font-weight: 600;
+    padding: 4px 10px; border-radius: 20px;
+    background: rgba(255,255,255,0.05); color: var(--text-secondary);
+}
+.status-indicator.online { color: var(--success); background: rgba(0,230,118,0.05); border: 1px solid rgba(0,230,118,0.2); }

@@ -209,8 +209,64 @@ class AvellanedaStoikovStrategy:
     # Cooldown period after a fill (seconds) - prevents revenge trading
     FILL_COOLDOWN_SECONDS = 2.0
     
+    def _check_config_update(self):
+        """Check for runtime config updates from Dashboard."""
+        now = time.time()
+        # Check every 2 seconds
+        if now - getattr(self, '_last_config_check', 0) < 2.0:
+            return
+
+        self._last_config_check = now
+        config_file = "data/runtime_config.json"
+        
+        if not os.path.exists(config_file):
+            return
+            
+        try:
+            # Check modification time
+            mtime = os.path.getmtime(config_file)
+            if mtime <= getattr(self, '_last_config_mtime', 0):
+                return
+                
+            self._last_config_mtime = mtime
+            
+            with open(config_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                
+            # Apply Updates
+            if 'AS_GAMMA' in data: 
+                self.gamma = float(data['AS_GAMMA'])
+                settings.AS_GAMMA = self.gamma # Sync global
+                
+            # Kappa is per-symbol in self._state, but we can update defaults
+            # or update all symbols if they are close to default?
+            # Actually, _update_kappa runs dynamically. 
+            # If user manually sets KAPPA in config, we should override the dynamic value?
+            # Let's say: Config overwrites dynamic value and resets it.
+            if 'AS_KAPPA' in data:
+                new_kappa = float(data['AS_KAPPA'])
+                # Only update if significantly different (manual override)
+                if abs(new_kappa - self.DEFAULT_KAPPA) > 0.01:
+                    logger.info(f"🔧 Config Update: Reseting Kappa to {new_kappa}")
+                    for sym in self.symbols:
+                        self._state[sym]['kappa'] = new_kappa
+                    self.DEFAULT_KAPPA = new_kappa
+            
+            if 'RISK_MAX_POSITION_PER_SYMBOL_USD' in data:
+                settings.RISK_MAX_POSITION_PER_SYMBOL_USD = float(data['RISK_MAX_POSITION_PER_SYMBOL_USD'])
+            
+            if 'RISK_MAX_POSITION_TOTAL_USD' in data:
+                settings.RISK_MAX_POSITION_TOTAL_USD = float(data['RISK_MAX_POSITION_TOTAL_USD'])
+                
+            logger.info("🔧 Runtime Config Reloaded")
+            
+        except Exception as e:
+            logger.error(f"Config reload failed: {e}")
+
     async def on_tick(self, event: MarketEvent):
         """Process each tick - recalculate quotes if needed."""
+        self._check_config_update()
+        
         tick_start_time = time.perf_counter() # Latency Start
         
         # Lazy start background tasks (ensure loop is running)

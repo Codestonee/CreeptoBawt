@@ -1,4 +1,9 @@
 import os
+import sys
+
+# Add project root to sys.path to allow imports from config/core/etc
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import sqlite3
 import pandas as pd
 import json
@@ -32,6 +37,17 @@ DB_PATH = "data/trading_data.db"
 STATE_FILE = "data/strategy_state.json"
 LOG_FILE = "logs/dashboard_log.txt"
 
+def get_db_connection():
+    if not os.path.exists(DB_PATH):
+        return None
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        return conn
+    except Exception as e:
+        logger.error(f"DB Connection error: {e}")
+        return None
+
 # WebSocket Manager
 class ConnectionManager:
     def __init__(self):
@@ -40,9 +56,11 @@ class ConnectionManager:
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
+        print(f"🔌 CLIENT CONNECTED: {websocket.client}")
 
     def disconnect(self, websocket: WebSocket):
         self.active_connections.remove(websocket)
+        print("🔌 CLIENT DISCONNECTED")
 
     async def broadcast(self, message: str):
         for connection in self.active_connections:
@@ -89,6 +107,59 @@ async def handle_action(action: str):
     return {"error": "Invalid action"}
 
 # =============================================================================
+# CONFIGURATION API (Dynamic Tuning)
+# =============================================================================
+CONFIG_FILE = "data/runtime_config.json"
+from config.settings import settings
+
+@app.get("/api/config")
+async def get_config():
+    """Return default settings merged with runtime overrides"""
+    base_config = {
+        "AS_GAMMA": settings.AS_GAMMA,
+        "AS_KAPPA": settings.AS_KAPPA,
+        "RISK_MAX_POSITION_PER_SYMBOL_USD": settings.RISK_MAX_POSITION_PER_SYMBOL_USD,
+        "RISK_MAX_POSITION_TOTAL_USD": settings.RISK_MAX_POSITION_TOTAL_USD,
+        "MIN_PROFIT_BPS": settings.MIN_PROFIT_BPS,
+        "MAKER_FEE_BPS": settings.MAKER_FEE_BPS,
+    }
+    
+    # Merge runtime overrides
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                overrides = json.load(f)
+                base_config.update(overrides)
+        except Exception as e:
+            logger.error(f"Failed to load runtime config: {e}")
+            
+    return base_config
+
+@app.post("/api/config")
+async def update_config(request: Request):
+    """Save new config values to runtime file"""
+    try:
+        new_values = await request.json()
+        
+        # Load existing
+        current = {}
+        if os.path.exists(CONFIG_FILE):
+             with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                current = json.load(f)
+        
+        # Update
+        current.update(new_values)
+        
+        # Write back
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(current, f, indent=4)
+            
+        return {"status": "ok", "config": current}
+    except Exception as e:
+        logger.error(f"Config update failed: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+# =============================================================================
 # DATA LOGIC
 # =============================================================================
 def get_system_health():
@@ -102,7 +173,7 @@ def get_system_health():
     }
     if os.path.exists("health_status.json"):
         try:
-            with open("health_status.json") as f:
+            with open("health_status.json", encoding='utf-8') as f:
                 health.update(json.load(f))
         except: pass
     return health
@@ -137,8 +208,21 @@ def get_metrics() -> Dict[str, Any]:
         
     try:
         # 1. TRADES & PNL
+        # Check if table exists first to avoid crashes if DB initialized but empty
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='trades'")
+        if not cursor.fetchone():
+             conn.close()
+             return metrics
+
         trades_df = pd.read_sql("SELECT * FROM trades ORDER BY timestamp DESC", conn)
-        positions = pd.read_sql("SELECT * FROM positions", conn)
+        
+        # Check positions table
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='positions'")
+        if cursor.fetchone():
+            positions = pd.read_sql("SELECT * FROM positions", conn)
+        else:
+            positions = pd.DataFrame()
         
         # Balance (Mock initial + Realized + Unrealized)
         initial_capital = 500.0 # From Settings
@@ -201,7 +285,8 @@ def get_metrics() -> Dict[str, Any]:
         inventory = {}
         if not positions.empty:
             for _, row in positions.iterrows():
-                if row['quantity'] != 0:
+                # Checking columns existence to be safe
+                if 'quantity' in row and row['quantity'] != 0:
                     inventory[row['symbol']] = {
                         "qty": row['quantity'],
                         "pnl": row.get('unrealized_pnl', 0),
@@ -212,18 +297,20 @@ def get_metrics() -> Dict[str, Any]:
         # 6. STRATEGY STATE
         if os.path.exists(STATE_FILE):
             try:
-                with open(STATE_FILE, 'r') as f:
+                with open(STATE_FILE, 'r', encoding='utf-8') as f:
                     metrics['strategy_state'] = json.load(f)
             except: pass
 
         # 7. LOGS
         if os.path.exists(LOG_FILE):
-             with open(LOG_FILE, 'r') as f:
+             with open(LOG_FILE, 'r', encoding='utf-8') as f:
                 lines = f.readlines()[-30:]
                 metrics['logs'] = [l.strip() for l in reversed(lines)]
                 
     except Exception as e:
         logger.error(f"Error calculating metrics: {e}")
+        # Add error to logs so client sees it
+        metrics['logs'].insert(0, f"SERVER METRIC ERROR: {str(e)}")
     finally:
         conn.close()
         
@@ -250,6 +337,8 @@ async def broadcast_loop():
         try:
             if manager.active_connections:
                 data = get_metrics()
+                # Debug print to confirm data size
+                # print(f"DEBUG: Broadcasting {len(str(data))} bytes")
                 await manager.broadcast(json.dumps(data))
         except Exception as e:
             logger.error(f"Broadcast error: {e}")

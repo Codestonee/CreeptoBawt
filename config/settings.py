@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     # --------------------------------------------------------------------------
     # RISK MANAGEMENT
     # --------------------------------------------------------------------------
-    MAX_POSITION_USD: float = 200.0  # Maximum notional size per position
+    MAX_POSITION_USD: float = 500.0  # Maximum notional size per position
     MIN_NOTIONAL_USD: float = 10.0   # Min order value (Binance >$5)
     
     # --------------------------------------------------------------------------
@@ -74,9 +74,9 @@ class Settings(BaseSettings):
     RISK_MAX_ORDER_USD: float = 500.0            # Fat finger protection
     
     # Position Limits
-    RISK_MAX_POSITION_PER_SYMBOL_USD: float = 150.0  # 75% of capital (assuming $200)
-    RISK_MAX_POSITION_TOTAL_USD: float = 150.0       # Max total exposure
-    RISK_MAX_OPEN_POSITIONS: int = 3                 # Max concurrent symbols
+    RISK_MAX_POSITION_PER_SYMBOL_USD: float = 500.0  # 100% of capital ($500)
+    RISK_MAX_POSITION_TOTAL_USD: float = 1500.0      # Max total exposure (3x leverage potentially)
+    RISK_MAX_OPEN_POSITIONS: int = 5                 # Max concurrent symbols
     
     # Daily Safety
     RISK_MAX_DAILY_LOSS_USD: float = 50.0            # Stop if down $50 in 24h

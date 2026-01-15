@@ -1,383 +1,442 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
+<head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>SERQET | Strike Command</title>
-    <link href="style.css" rel="stylesheet" />
-    <link
-      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Orbitron:wght@400;700;900&family=Rajdhani:wght@500;600;700&display=swap"
-      rel="stylesheet"
-    />
+    <title>SERQET | Nexus Console</title>
+    <link href="obsidian.css" rel="stylesheet" />
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
-  </head>
-  <body>
-    <!-- Header -->
-    <header class="header-bar">
-      <div class="header-left">
-        <div class="brand">
-          <svg viewBox="0 0 100 100" class="logo-svg">
-            <path
-              d="M50 20 L55 30 L65 30 L60 40 L65 50 L55 60 L50 80 L45 60 L35 50 L40 40 L35 30 L45 30 Z"
-              fill="#b8a566"
-            />
-          </svg>
-          <div class="title-wrapper">
-            <div class="main-title">SERQET</div>
-            <div class="sub-title">STRIKE SYSTEM</div>
-          </div>
-        </div>
-        <div class="status-pill active" id="system-status">● ACTIVE</div>
-      </div>
-      <div class="header-right">
-        <div class="clock" id="clock">00:00:00</div>
-      </div>
-    </header>
+    <style>
+        /* Specific overrides for JS-injected content or dynamic states */
+        .status-pill { padding: 4px 12px; border-radius: 20px; font-size: 0.75rem; display: flex; align-items: center; gap: 6px; border: 1px solid currentColor; }
+        .status-pill--ok { color: var(--success); background: rgba(100,255,218,0.1); }
+        .status-pill--error { color: var(--danger); background: rgba(255,95,95,0.1); }
+        
+        .pnl--pos { color: var(--success); }
+        .pnl--neg { color: var(--danger); }
+        
+        /* Strategy Grid specific */
+        .strategy__grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+        .strategy__tile { background: rgba(0,0,0,0.2); padding: 8px; border-radius: 4px; text-align: center; }
+        .strategy__tile-label { font-size: 0.65rem; color: var(--text-muted); display: block; }
+        .strategy__tile-value { font-family: 'JetBrains Mono', monospace; font-size: 0.9rem; color: var(--text-main); }
 
-    <!-- Main Layout -->
-    <div class="grid-container">
-      <!-- Left Column -->
-      <div class="column">
-        <!-- Emergency -->
-        <div class="card">
-          <div class="card-title">⚠️ EMERGENCY CONTROLS</div>
-          <div class="btn-group">
-            <button class="btn btn-warning" onclick="sendAction('pause')">
-              ⏸️ PAUSE
-            </button>
-            <button class="btn btn-danger" onclick="sendAction('flatten')">
-              🛑 FLATTEN
-            </button>
-          </div>
-        </div>
+        /* Risk Bar */
+        .risk-bar { height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px; margin-top: 6px; overflow: hidden; }
+        .risk-fill { height: 100%; background: var(--success); transition: width 0.3s; }
+        .risk-fill.warning { background: var(--warning); }
+        .risk-fill.danger { background: var(--danger); }
+    </style>
+</head>
+<body>
+    <div class="app">
+        <!-- HEADER -->
+        <header class="header">
+            <div class="brand">
+                <svg class="brand__logo" viewBox="0 0 100 100">
+                    <path d="M50 20 L55 30 L65 30 L60 40 L65 50 L55 60 L50 80 L45 60 L35 50 L40 40 L35 30 L45 30 Z" fill="currentColor" />
+                </svg>
+                <div>
+                    <div class="brand__title">SERQET</div>
+                    <div class="brand__subtitle">NEXUS CONSOLE</div>
+                </div>
+            </div>
+            
+            <div class="header__controls">
+                <select id="symbol-filter" onchange="updateFilter(this.value)">
+                    <option value="ALL">ALL PAIRS</option>
+                </select>
+                <div class="status-pill status-pill--ok" id="system-status">
+                    <div class="status-dot active"></div> ONLINE
+                </div>
+                <div style="font-family:'JetBrains Mono'; font-size:0.9rem;" id="clock">00:00:00</div>
+            </div>
+        </header>
 
-        <!-- Account -->
-        <div class="card">
-          <div class="card-title">💰 ACCOUNT STATUS</div>
-          <div class="metric-large" id="net-liq">$0.00</div>
-          <div class="metric-row">
-            <div class="metric-box">
-              <div class="label">Realized</div>
-              <div class="value" id="realized-pnl">$0.00</div>
-            </div>
-            <div class="metric-box">
-              <div class="label">Unrealized</div>
-              <div class="value" id="unrealized-pnl">$0.00</div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Performance -->
-        <div class="card">
-          <div class="card-title">📊 PERFORMANCE</div>
-          <div class="metric-row">
-            <div class="metric-box">
-              <div class="label">Win Rate</div>
-              <div class="value" id="win-rate">0%</div>
-            </div>
-            <div class="metric-box">
-              <div class="label">Maker Rate</div>
-              <div class="value" id="maker-rate">0%</div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-        <!-- Center Column -->
-        <div class="column" style="flex: 2;">
-            <!-- Tabs -->
-            <div class="tabs">
-                <div class="tab active" onclick="switchTab('equity')" id="btn-equity">📈 EQUITY & POSITIONS</div>
-                <div class="tab" onclick="switchTab('strategy')" id="btn-strategy">🧠 STRATEGY</div>
-            </div>
-
-            <!-- TAB CONTENT: EQUITY -->
-            <div id="view-equity" style="display: block;">
-                <!-- Equity Chart -->
+        <!-- MAIN LAYOUT -->
+        <div class="layout">
+            <!-- LEFT COLUMN (Controls & Stats) -->
+            <div class="col">
                 <div class="card">
-                    <div class="card-title">📈 EQUITY CURVE</div>
-                    <div id="equity-chart" style="height: 350px;"></div>
+                    <div class="card__header">
+                        <div class="card__title">COMMAND</div>
+                    </div>
+                    <div style="display:flex; gap:10px;">
+                        <button class="btn" style="flex:1" onclick="sendAction('pause')">⏸ PAUSE</button>
+                        <button class="btn btn--danger" style="flex:1" onclick="sendAction('flatten')">🛑 FLATTEN</button>
+                    </div>
                 </div>
 
-                <!-- Positions -->
                 <div class="card">
-                    <div class="card-title">📍 POSITIONS</div>
-                    <div id="positions-list">
-                        <div style="text-align:center; padding: 20px; color: #666;">Waiting for data...</div>
+                    <div class="card__header"><div class="card__title">ACCOUNT</div></div>
+                    <div class="kpi" style="margin-bottom:12px;">
+                        <div class="kpi__label">NET LIQUIDITY</div>
+                        <div class="kpi__value" id="net-liq">$0.00</div>
+                    </div>
+                    <div class="kpi-grid">
+                        <div class="kpi">
+                            <div class="kpi__label">REALIZED</div>
+                            <div class="kpi__value" id="realized-pnl">$0.00</div>
+                        </div>
+                        <div class="kpi">
+                            <div class="kpi__label">UNREALIZED</div>
+                            <div class="kpi__value" id="unrealized-pnl">$0.00</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card__header"><div class="card__title">PERFORMANCE</div></div>
+                    <div class="kpi-grid" style="margin-bottom:12px;">
+                        <div class="kpi">
+                            <div class="kpi__label">WIN RATE</div>
+                            <div class="kpi__value" id="win-rate">0%</div>
+                        </div>
+                        <div class="kpi">
+                            <div class="kpi__label">MAKER %</div>
+                            <div class="kpi__value" id="maker-rate">0%</div>
+                        </div>
+                    </div>
+                    <div class="kpi">
+                         <div class="kpi__label">SHARPE RATIO</div>
+                         <div class="kpi__value" id="sharpe-ratio">0.00</div>
                     </div>
                 </div>
             </div>
 
-            <!-- TAB CONTENT: STRATEGY -->
-            <div id="view-strategy" style="display: none;">
-                <div class="card">
-                    <div class="card-title">🤖 STRATEGY INTERNALS</div>
-                    <div id="strategy-content">
-                        <div style="text-align:center; padding: 20px; color: #666;">No active strategy state</div>
+            <!-- CENTER COLUMN (Tabs & Charts) -->
+            <div class="col">
+                <div class="tabs">
+                    <button class="tabs__btn active" id="btn-equity" onclick="switchTab('equity')">EQUITY</button>
+                    <button class="tabs__btn" id="btn-strategy" onclick="switchTab('strategy')">STRATEGY</button>
+                    <button class="tabs__btn" id="btn-risk" onclick="switchTab('risk')">RISK</button>
+                    <button class="tabs__btn" id="btn-latency" onclick="switchTab('latency')">NETWORK</button>
+                    <button class="tabs__btn" id="btn-config" onclick="switchTab('config')">CONFIG</button>
+                </div>
+
+                <!-- VIEW: EQUITY -->
+                <div id="view-equity" style="flex:1; display:flex; flex-direction:column; gap:20px; height:100%;">
+                    <div class="card" style="height:320px;">
+                        <div class="card__header"><div class="card__title">GROWTH CURVE</div></div>
+                        <div id="equity-chart" style="width:100%; height:100%;"></div>
+                    </div>
+                    
+                    <div class="card card--tall">
+                        <div class="card__header"><div class="card__title">POSITIONS</div></div>
+                        <div id="positions-list" class="list">
+                            <div style="text-align:center; padding:20px; color:var(--text-dim)">Waiting for data...</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- OTHER VIEWS (Hidden) -->
+                <div id="view-strategy" style="display:none; height:100%;">
+                    <div class="card card--tall">
+                        <div class="card__header"><div class="card__title">STRATEGY STATE</div></div>
+                        <div id="strategy-content" class="list"></div>
+                    </div>
+                </div>
+
+                <div id="view-risk" style="display:none; height:100%;">
+                     <div class="card card--tall">
+                        <div class="card__header"><div class="card__title">RISK EXPOSURE</div></div>
+                        <div id="risk-content" class="list"></div>
+                    </div>
+                </div>
+
+                <div id="view-latency" style="display:none; height:100%;">
+                     <div class="card card--tall">
+                        <div class="card__header"><div class="card__title">SYSTEM HEALTH</div></div>
+                        <div id="latency-content" class="list"></div>
+                    </div>
+                </div>
+
+                <div id="view-config" style="display:none; height:100%;">
+                     <div class="card card--tall">
+                        <div class="card__header">
+                            <div class="card__title">ALGO PARAMETERS</div>
+                            <button class="btn" onclick="saveConfig()">💾 SAVE CHANGES</button>
+                        </div>
+                        <div id="config-form" class="list" style="padding:10px;">
+                            <!-- Form generated by JS -->
+                            <div style="text-align:center; padding:20px; color:var(--text-dim)">Loading config...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- RIGHT COLUMN (Feed & Logs) -->
+            <div class="col">
+                <div class="card card--tall">
+                    <div class="card__header"><div class="card__title">LIVE FEED</div></div>
+                    <div id="trades-list" class="list">
+                         <div style="text-align:center; padding:20px; color:var(--text-dim)">Waiting...</div>
+                    </div>
+                </div>
+
+                <div class="card" style="height: 250px;">
+                    <div class="card__header"><div class="card__title">SYSTEM LOG</div></div>
+                    <div id="log-list" class="log-panel">
+                        <div class="log-line"><span>System initializing...</span></div>
                     </div>
                 </div>
             </div>
         </div>
-
-      <!-- Right Column -->
-      <div class="column">
-        <!-- Trades -->
-        <div class="card">
-          <div class="card-title">⚡ ACTIVITY</div>
-          <div id="trades-list" class="scroll-list">
-            <!-- Dynamic Trades -->
-          </div>
-        </div>
-
-        <!-- Logs -->
-        <div class="card">
-          <div class="card-title">📜 LOGS</div>
-          <div id="log-list" class="scroll-list log-container">
-            <!-- Dynamic Logs -->
-          </div>
-        </div>
-      </div>
     </div>
 
     <script>
-        // WebSocket Connection
+        // Minimal logic to bootstrap, rest handles data
         let socket;
-        let isConnected = false;
-
-        function connect() {
-            const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${proto}//${window.location.host}/ws`;
-            
-            console.log("Connecting to WebSocket:", wsUrl);
-            socket = new WebSocket(wsUrl);
-
-            socket.onopen = () => {
-                console.log("WebSocket Connected");
-                isConnected = true;
-                updateStatus(true);
-            };
-
-            socket.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-                updateUI(data);
-            };
-
-            socket.onclose = () => {
-                console.log("WebSocket Disconnected");
-                isConnected = false;
-                updateStatus(false);
-                setTimeout(connect, 3000); // Reconnect after 3s
-            };
-
-            socket.onerror = (error) => {
-                console.error("WebSocket Error:", error);
-                socket.close();
-            };
-        }
-
-        // Clock
+        let currentFilter = 'ALL';
+        
         setInterval(() => {
             document.getElementById('clock').innerText = new Date().toLocaleTimeString();
         }, 1000);
 
-        function updateStatus(active) {
-            const el = document.getElementById('system-status');
-            if (active) {
-                // Status is updated via data packet now
-            } else {
-                el.innerText = "● RECONNECTING";
-                el.className = "status-pill error";
-            }
+        function updateFilter(val) { currentFilter = val; }
+        
+        async function sendAction(action) {
+             if (action === 'flatten' && !confirm("⚠️ CONFIRM FLATTEN?")) return;
+             await fetch(`/api/action/${action}`, { method: 'POST' });
         }
 
-        async function sendAction(action) {
-            if (action === 'flatten' && !confirm("⚠️ CONFIRM FLATTEN ALL?")) return;
+        async function switchTab(name) {
+            ['equity', 'strategy', 'risk', 'latency', 'config'].forEach(t => {
+                document.getElementById('view-' + t).style.display = t === name ? (t === 'equity' ? 'flex' : 'block') : 'none';
+                document.getElementById('btn-' + t).className = t === name ? 'tabs__btn active' : 'tabs__btn';
+            });
+            window.dispatchEvent(new Event('resize'));
             
+            if (name === 'config') loadConfig();
+        }
+        
+        async function loadConfig() {
             try {
-                const res = await fetch(`/api/action/${action}`, { method: 'POST' });
-                const json = await res.json();
-                console.log("Action result:", json);
-                // Visual feedback?
-            } catch (e) {
-                alert("Action failed: " + e);
+                const res = await fetch('/api/config');
+                const conf = await res.json();
+                const container = document.getElementById('config-form');
+                
+                let html = '';
+                const labels = {
+                    'AS_GAMMA': 'Risk Aversion (Gamma)',
+                    'AS_KAPPA': 'Inventory Aversion (Kappa)',
+                    'RISK_MAX_POSITION_PER_SYMBOL_USD': 'Max Position ($)',
+                    'RISK_MAX_POSITION_TOTAL_USD': 'Max Total Exposure ($)',
+                    'MIN_PROFIT_BPS': 'Min Profit (BPS)',
+                    'MAKER_FEE_BPS': 'Maker Fee (BPS)'
+                };
+                
+                Object.entries(conf).forEach(([key, val]) => {
+                    const label = labels[key] || key;
+                    html += `
+                        <div style="margin-bottom:15px;">
+                            <label style="display:block; font-size:0.75rem; color:var(--text-secondary); margin-bottom:5px;">${label}</label>
+                            <input type="number" step="0.01" id="conf-${key}" value="${val}" 
+                                   style="width:100%; bg:transparent; border:1px solid #333; background:#111; color:#fff; padding:8px; border-radius:4px; font-family:'JetBrains Mono'">
+                        </div>
+                    `;
+                });
+                container.innerHTML = html;
+            } catch(e) {
+                console.error(e);
             }
+        }
+        
+        async function saveConfig() {
+             const keys = ['AS_GAMMA', 'AS_KAPPA', 'RISK_MAX_POSITION_PER_SYMBOL_USD', 'RISK_MAX_POSITION_TOTAL_USD', 'MIN_PROFIT_BPS', 'MAKER_FEE_BPS'];
+             const payload = {};
+             keys.forEach(k => {
+                 const el = document.getElementById(`conf-${k}`);
+                 if(el) payload[k] = parseFloat(el.value);
+             });
+             
+             try {
+                 await fetch('/api/config', {
+                     method: 'POST',
+                     headers: {'Content-Type': 'application/json'},
+                     body: JSON.stringify(payload)
+                 });
+                 alert("✅ CONFIG SAVED! Strategies will update in ~2s.");
+             } catch(e) {
+                 alert("❌ SAVE FAILED: " + e.message);
+             }
+        }
+
+        function connect() {
+            const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            socket = new WebSocket(`${proto}//${window.location.host}/ws`);
+            socket.onopen = () => {
+                const el = document.getElementById('system-status');
+                el.className = 'status-pill status-pill--ok';
+                el.innerHTML = '<div class="status-dot active"></div> ONLINE';
+            };
+            socket.onmessage = (e) => updateUI(JSON.parse(e.data));
+            socket.onclose = () => {
+                 const el = document.getElementById('system-status');
+                 el.className = 'status-pill status-pill--error';
+                 el.innerHTML = '<div class="status-dot"></div> OFFLINE';
+                 setTimeout(connect, 2000);
+            };
         }
 
         function updateUI(data) {
-            // Header Stats
-            const health = data.system_health;
-            document.getElementById('system-status').innerHTML = data.status === "ACTIVE" 
-                ? "<span style='color:#3FB950'>● ACTIVE</span>" 
-                : `<span style='color:#F85149'>● ${data.status}</span>`;
-            
-            // Should add these to header if HTML supports it. 
-            // For now, let's stick to the main UI updates.
+            try {
+                // Populate Filter
+                 const select = document.getElementById('symbol-filter');
+                 const known = new Set(Array.from(select.options).map(o => o.value));
+                 const incoming = new Set([...Object.keys(data.inventory||{}), ...(data.recent_trades||[]).map(t => t.symbol)]);
+                 incoming.forEach(s => {
+                     if(!known.has(s)) {
+                         const opt = document.createElement('option');
+                         opt.value = s; opt.innerText = s.toUpperCase();
+                         select.appendChild(opt);
+                     }
+                 });
 
-            // Account
-            document.getElementById('net-liq').innerText = `$${data.balance.toFixed(2)}`;
-            document.getElementById('realized-pnl').innerText = `$${data.realized_pnl.toFixed(2)}`;
-            document.getElementById('unrealized-pnl').innerText = `$${data.unrealized_pnl.toFixed(2)}`;
+                 // KPIs
+                 document.getElementById('net-liq').innerText = `$${(data.balance||0).toFixed(2)}`;
+                 const rpnl = document.getElementById('realized-pnl');
+                 rpnl.innerText = `$${(data.realized_pnl||0).toFixed(2)}`;
+                 rpnl.className = `kpi__value ${(data.realized_pnl||0)>=0 ? 'text-success' : 'text-danger'}`;
+                 
+                 const upnl = document.getElementById('unrealized-pnl');
+                 upnl.innerText = `$${(data.unrealized_pnl||0).toFixed(2)}`;
+                 upnl.className = `kpi__value ${(data.unrealized_pnl||0)>=0 ? 'text-success' : 'text-danger'}`;
+                 
+                 document.getElementById('win-rate').innerText = `${(data.win_rate_decision||0).toFixed(1)}%`;
+                 document.getElementById('maker-rate').innerText = `${(data.maker_rate||0).toFixed(0)}%`;
+                 document.getElementById('sharpe-ratio').innerText = (data.sharpe_ratio||0).toFixed(2);
 
-            document.getElementById('win-rate').innerText = `${data.win_rate_decision.toFixed(1)}%`;
-            document.getElementById('maker-rate').innerText = `${data.maker_rate.toFixed(0)}%`;
-
-            // Best/Worst (We need to add these elements to HTML or repurpose existing)
-            // Since HTML structure is fixed, let's update what we have.
-            
-            // Positions List (Inventory)
-            const posContainer = document.getElementById('positions-list');
-            posContainer.innerHTML = '';
-            const inv = data.inventory || {};
-            if (Object.keys(inv).length === 0) {
-                 posContainer.innerHTML = '<div style="text-align:center; padding: 20px; color: #666;">No positions</div>';
-            } else {
-                for (const [sym, info] of Object.entries(inv)) {
-                    const div = document.createElement('div');
-                    const isLong = info.qty > 0;
-                    const color = isLong ? 'var(--venom-green)' : 'var(--venom-red)';
-                    const pnlColor = info.pnl >= 0 ? 'var(--venom-green)' : 'var(--venom-red)';
-                    
-                    div.style.cssText = `display:flex; justify-content:space-between; padding:8px; margin:4px 0; background:#161B22; border-radius:6px; border-left:3px solid ${color};`;
-                    div.innerHTML = `
-                        <div>
-                            <span style="font-size:1.1rem">💎</span> 
-                            <b style="color:#E6EDF3">${sym}</b> 
-                            <span style="color:${color}; font-size:0.75rem">${isLong ? '📈 LONG' : '📉 SHORT'}</span>
+                 // Positions
+                 const posContainer = document.getElementById('positions-list');
+                 const inv = data.inventory || {};
+                 const filteredInv = Object.entries(inv).filter(([k,v]) => currentFilter === 'ALL' || k === currentFilter);
+                 
+                 posContainer.innerHTML = filteredInv.length ? '' : '<div style="text-align:center; padding:20px; opacity:0.5">No positions</div>';
+                 filteredInv.forEach(([sym, info]) => {
+                     const isLong = info.qty > 0;
+                     posContainer.innerHTML += `
+                        <div class="list__item" style="border-left: 3px solid ${isLong ? 'var(--success)' : 'var(--danger)'}">
+                            <div style="font-weight:600">${sym}</div>
+                            <div style="text-align:right">
+                                <div style="font-size:0.8rem">${info.qty}</div>
+                                <div class="${info.pnl>=0?'text-success':'text-danger'}">$${info.pnl.toFixed(2)}</div>
+                            </div>
                         </div>
-                        <div style="text-align:right">
-                            <div style="color:#8B949E; font-size:0.75rem">Size: ${info.qty}</div>
-                            <div style="color:${pnlColor}; font-weight:600">$${info.pnl.toFixed(2)}</div>
+                     `;
+                 });
+
+                 // Strategy
+                 const stratContainer = document.getElementById('strategy-content');
+                 const state = data.strategy_state || {};
+                 const filteredState = Object.entries(state).filter(([k,v]) => currentFilter === 'ALL' || k === currentFilter);
+                 stratContainer.innerHTML = filteredState.map(([sym, s]) => `
+                    <div style="background:rgba(255,255,255,0.02); padding:10px; border-radius:8px; margin-bottom:8px;">
+                        <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+                            <span style="font-weight:600; color:var(--primary)">${sym}</span>
+                            <span style="font-size:0.75rem; opacity:0.7">${s.regime||'UNK'}</span>
                         </div>
-                    `;
-                    posContainer.appendChild(div);
-                }
+                        <div class="strategy__grid">
+                            <div class="strategy__tile"><span class="strategy__tile-label">VOL</span><span>${((s.volatility||0)*10000).toFixed(0)}</span></div>
+                            <div class="strategy__tile"><span class="strategy__tile-label">KAPPA</span><span>${(s.kappa||0).toFixed(2)}</span></div>
+                        </div>
+                    </div>
+                 `).join('');
+
+                 // Risk
+                 const riskContainer = document.getElementById('risk-content');
+                 let totalVal = 0;
+                 let riskHtml = '';
+                 Object.entries(inv).forEach(([sym, info]) => {
+                      const val = Math.abs(info.qty * info.entry);
+                      totalVal += val;
+                      const pct = Math.min((val/500)*100, 100);
+                      riskHtml += `
+                        <div style="margin-bottom:12px">
+                            <div style="display:flex; justify-content:space-between; font-size:0.8rem; margin-bottom:4px;">
+                                <span>${sym}</span>
+                                <span>$${val.toFixed(0)} / $500</span>
+                            </div>
+                            <div class="risk-bar"><div class="risk-fill ${pct>80?'danger':(pct>50?'warning':'')}" style="width:${pct}%"></div></div>
+                        </div>
+                      `;
+                 });
+                 const totalPct = Math.min((totalVal/1500)*100, 100);
+                 riskContainer.innerHTML = `
+                    <div style="border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:15px; margin-bottom:15px;">
+                        <div style="display:flex; justify-content:space-between;">
+                            <span>TOTAL EXPOSURE</span>
+                            <span style="color:var(--primary)">$${totalVal.toFixed(0)} / $1500</span>
+                        </div>
+                        <div class="risk-bar" style="height:8px"><div class="risk-fill ${totalPct>80?'danger':''}" style="width:${totalPct}%"></div></div>
+                    </div>
+                    ${riskHtml}
+                 `;
+
+                 // Latency
+                 const latContainer = document.getElementById('latency-content');
+                 const health = data.system_health || {};
+                 latContainer.innerHTML = Object.entries(health).map(([k,v]) => `
+                    <div class="list__item">
+                        <span>${k.toUpperCase()}</span>
+                        <span class="status-pill status-pill--${v=='OK'?'ok':'error'}">${v}</span>
+                    </div>
+                 `).join('');
+
+                 // Trades
+                 const tradesContainer = document.getElementById('trades-list');
+                 const trades = (data.recent_trades || []).filter(t => currentFilter === 'ALL' || t.symbol === currentFilter);
+                 tradesContainer.innerHTML = trades.slice(0,50).map(t => {
+                     const isBuy = t.side === 'BUY';
+                     return `
+                        <div class="list__item" style="border-left: 3px solid ${isBuy ? 'var(--success)' : 'var(--danger)'}">
+                            <div style="display:flex; gap:10px; align-items:center;">
+                                <span class="badge ${isBuy?'badge--buy':'badge--sell'}">${t.side}</span>
+                                <span style="font-weight:600; width:60px;">${t.symbol}</span>
+                            </div>
+                            <span class="${t.pnl>=0?'text-success':'text-danger'}">$${t.pnl.toFixed(4)}</span>
+                        </div>
+                     `;
+                 }).join('');
+
+                 // LOGGER
+                 const logContainer = document.getElementById('log-list');
+                 logContainer.innerHTML = (data.logs||[]).map(l => {
+                     let cls = '';
+                     if(l.includes('ERROR')) cls = 'log-line--err';
+                     else if(l.includes('WARNING')) cls = 'log-line--warn';
+                     else if(l.includes('BUY') || l.includes('SELL')) cls = 'log-line--info';
+                     return `<div class="log-line ${cls}"><span>${l}</span></div>`;
+                 }).join('');
+
+                 // CHART
+                 if(data.equity_curve && data.equity_curve.length) {
+                     const x = data.equity_curve.map(d => new Date(d.time * 1000));
+                     const y = data.equity_curve.map(d => d.equity);
+                     const color = '#ffffff'; // White line
+                     
+                     Plotly.newPlot('equity-chart', [{
+                         x: x, y: y, mode: 'lines',
+                         line: { color: color, width: 1.5 },
+                         fill: 'tozeroy', 
+                         fillcolor: 'rgba(255, 255, 255, 0.05)' 
+                     }], {
+                         paper_bgcolor: 'rgba(0,0,0,0)',
+                         plot_bgcolor: 'rgba(0,0,0,0)',
+                         margin: { l: 40, r: 10, t: 20, b: 30 },
+                         xaxis: { color: '#52525b', gridcolor: '#27272a' }, // Dark grey grid
+                         yaxis: { color: '#52525b', gridcolor: '#27272a' },
+                         showlegend: false
+                     }, { responsive: true, displayModeBar: false });
+                 }
+
+            } catch (e) {
+                console.error(e);
+                document.getElementById('log-list').innerHTML = `<div class="log-line log-line--err">UI ERROR: ${e.message}</div>`;
             }
-
-            // Strategy Internals
-            const stratContainer = document.getElementById('strategy-content');
-            const state = data.strategy_state || {};
-            // Pick first symbol for now
-            const syms = Object.keys(state);
-            if (syms.length === 0) {
-                stratContainer.innerHTML = '<div style="text-align:center; padding: 20px; color: #666;">No active strategy state</div>';
-            } else {
-                const sym = syms[0];
-                const s = state[sym];
-                const regimeColor = s.regime === 'MEAN_REVERTING' ? '#3FB950' : '#D29922';
-                
-                stratContainer.innerHTML = `
-                    <div style="margin-bottom:5px; text-align:center; color:#8B949E; font-size:0.8rem">
-                        Displaying: <b style="color:#E6EDF3">${sym.toUpperCase()}</b>
-                    </div>
-                    <div style="display:flex; justify-content:space-around; margin-bottom:10px;">
-                        <div>Regime: <span style='color:${regimeColor}; font-weight:bold'>${s.regime}</span></div>
-                        <div>Vol: <b>${(s.volatility * 10000).toFixed(1)} bps</b></div>
-                    </div>
-                    <hr style="margin:5px 0; border-color:#30363D">
-                    <div style="display:flex; justify-content:space-around; font-family:'JetBrains Mono', monospace; font-size:0.9rem">
-                        <div>γ: <span style="color:#E6EDF3">${s.gamma?.toExponential(2) || 0}</span></div>
-                        <div>κ: <span style="color:#E6EDF3">${s.kappa?.toFixed(4) || 0}</span></div>
-                    </div>
-                `;
-            }
-
-            // Trades List
-            const tradesContainer = document.getElementById('trades-list');
-            tradesContainer.innerHTML = '';
-            
-            data.recent_trades.slice(0, 50).forEach(trade => {
-                const div = document.createElement('div');
-                div.className = 'trade-item';
-                const pnlClass = trade.pnl >= 0 ? 'text-green' : 'text-red';
-                const sideColor = trade.side === "BUY" ? 'var(--venom-green)' : 'var(--venom-red)';
-                const ts = new Date(trade.timestamp * 1000).toLocaleTimeString();
-                
-                div.style.borderLeft = `3px solid ${sideColor}`;
-                div.innerHTML = `
-                    <div class="trade-info">
-                        <span class="trade-ts">${ts}</span>
-                        <div style="display:flex; gap:5px; align-items:center;">
-                            <span class="trade-sym">${trade.symbol}</span>
-                            <span style="color:${sideColor}; border:1px solid ${sideColor}; padding:0 4px; border-radius:3px; font-size:0.6rem;">${trade.side}</span>
-                        </div>
-                    </div>
-                    <div class="trade-pnl ${pnlClass}">$${trade.pnl.toFixed(2)}</div>
-                `;
-                tradesContainer.appendChild(div);
-            });
-
-            // Logs
-            const logContainer = document.getElementById('log-list');
-            logContainer.innerHTML = '';
-            data.logs.forEach(log => {
-                const div = document.createElement('div');
-                div.className = 'log-entry';
-                if (log.includes("ERROR")) div.classList.add('text-red');
-                else if (log.includes("WARNING")) div.classList.add('text-yellow');
-                else if (log.includes("BUY")) div.style.color = "var(--venom-green)";
-                else if (log.includes("SELL")) div.style.color = "var(--venom-red)";
-                div.innerText = log;
-                logContainer.appendChild(div);
-            });
-
-            // Equity Chart
-            renderChart(data.equity_curve);
-        }
-
-        function renderChart(curveData) {
-            if (!curveData || curveData.length === 0) return;
-
-            const x = curveData.map(d => new Date(d.time * 1000));
-            const y = curveData.map(d => d.equity);
-            
-            const start = y[0];
-            const end = y[y.length - 1];
-            const color = end >= start ? '#4ade80' : '#f87171'; // Green/Red
-            const fillColor = end >= start ? 'rgba(74, 222, 128, 0.1)' : 'rgba(248, 113, 113, 0.1)';
-
-            const trace = {
-                x: x, y: y,
-                mode: 'lines',
-                line: { color: color, width: 2 },
-                fill: 'tozeroy',
-                fillcolor: fillColor
-            };
-
-            const layout = {
-                paper_bgcolor: 'rgba(0,0,0,0)',
-                plot_bgcolor: 'rgba(0,0,0,0)',
-                margin: { l: 40, r: 10, t: 10, b: 30 },
-                xaxis: { 
-                    color: '#8a7355',
-                    gridcolor: 'rgba(255, 255, 255, 0.05)',
-                    tickformat: '%H:%M'
-                },
-                yaxis: { 
-                    color: '#8a7355',
-                    gridcolor: 'rgba(255, 255, 255, 0.05)'
-                },
-                height: 350,
-                showlegend: false
-            };
-            const config = { responsive: true, displayModeBar: false };
-            Plotly.newPlot('equity-chart', [trace], layout, config);
-        }
-
-        // Tab Switching
-        function switchTab(tabName) {
-            document.getElementById('view-equity').style.display = 'none';
-            document.getElementById('view-strategy').style.display = 'none';
-            document.getElementById('btn-equity').classList.remove('active');
-            document.getElementById('btn-strategy').classList.remove('active');
-
-            document.getElementById('view-' + tabName).style.display = 'block';
-            document.getElementById('btn-' + tabName).classList.add('active');
-
-            if (tabName === 'equity') window.dispatchEvent(new Event('resize'));
         }
         
-        // Start
         connect();
     </script>
-  </body>
+</body>
 </html>
