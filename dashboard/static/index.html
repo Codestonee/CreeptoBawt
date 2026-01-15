@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>SERQET | Nexus Console</title>
     <link href="obsidian.css?v=3" rel="stylesheet" />
-    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <style>
         /* Specific overrides for JS-injected content or dynamic states */
         .status-pill { padding: 4px 12px; border-radius: 20px; font-size: 0.75rem; display: flex; align-items: center; gap: 6px; border: 1px solid currentColor; }
@@ -184,8 +183,46 @@
         </div>
     </div>
 
+    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
     <script>
-        // Minimal logic to bootstrap, rest handles data
+        // --- TRADINGVIEW CHART SETUP ---
+        const chartContainer = document.getElementById('equity-chart');
+        const chart = LightweightCharts.createChart(chartContainer, {
+            layout: { 
+                background: { type: 'solid', color: 'transparent' }, 
+                textColor: '#52525b',
+                fontFamily: 'JetBrains Mono'
+            },
+            grid: {
+                vertLines: { color: 'rgba(42, 42, 42, 0)' },
+                horzLines: { color: 'rgba(42, 42, 42, 0.5)', style: 3 }
+            },
+            rightPriceScale: {
+                borderColor: 'rgba(255, 255, 255, 0.1)',
+            },
+            timeScale: {
+                borderColor: 'rgba(255, 255, 255, 0.1)',
+                timeVisible: true,
+                secondsVisible: false,
+            },
+            crosshair: {
+                mode: LightweightCharts.CrosshairMode.Normal,
+            },
+        });
+
+        const areaSeries = chart.addAreaSeries({
+            lineColor: '#ffffff',
+            topColor: 'rgba(255, 255, 255, 0.1)',
+            bottomColor: 'rgba(255, 255, 255, 0.0)',
+            lineWidth: 2,
+        });
+
+        // Resize handler
+        window.addEventListener('resize', () => {
+            chart.applyOptions({ width: chartContainer.clientWidth, height: chartContainer.clientHeight });
+        });
+
+        // --- DASHBOARD LOGIC ---
         let socket;
         let currentFilter = 'ALL';
         
@@ -305,7 +342,8 @@
                  
                  document.getElementById('win-rate').innerText = `${(data.win_rate_decision||0).toFixed(1)}%`;
                  document.getElementById('maker-rate').innerText = `${(data.maker_rate||0).toFixed(0)}%`;
-                 document.getElementById('sharpe-ratio').innerText = (data.sharpe_ratio||0).toFixed(2);
+                 if(document.getElementById('sharpe-ratio'))
+                     document.getElementById('sharpe-ratio').innerText = (data.sharpe_ratio||0).toFixed(2);
 
                  // Positions
                  const posContainer = document.getElementById('positions-list');
@@ -409,25 +447,21 @@
                      return `<div class="log-line ${cls}"><span>${l}</span></div>`;
                  }).join('');
 
-                 // CHART
-                 if(data.equity_curve && data.equity_curve.length) {
-                     const x = data.equity_curve.map(d => new Date(d.time * 1000));
-                     const y = data.equity_curve.map(d => d.equity);
-                     const color = '#ffffff'; // White line
+                 // CHART: TradingView Update
+                 if(data.equity_curve && data.equity_curve.length > 0) {
+                     const seriesData = data.equity_curve.map(d => ({
+                         time: d.time,
+                         value: d.equity
+                     }));
                      
-                     Plotly.newPlot('equity-chart', [{
-                         x: x, y: y, mode: 'lines',
-                         line: { color: color, width: 1.5 },
-                         fill: 'tozeroy', 
-                         fillcolor: 'rgba(255, 255, 255, 0.05)' 
-                     }], {
-                         paper_bgcolor: 'rgba(0,0,0,0)',
-                         plot_bgcolor: 'rgba(0,0,0,0)',
-                         margin: { l: 40, r: 10, t: 20, b: 30 },
-                         xaxis: { color: '#52525b', gridcolor: '#27272a' }, // Dark grey grid
-                         yaxis: { color: '#52525b', gridcolor: '#27272a' },
-                         showlegend: false
-                     }, { responsive: true, displayModeBar: false });
+                     // Only set data if new (optimization)
+                     const lastData = areaSeries.data().slice(-1)[0];
+                     const lastNew = seriesData.slice(-1)[0];
+                     
+                     if (!lastData || (lastNew.time > lastData.time)) {
+                         areaSeries.setData(seriesData);
+                         chart.timeScale().fitContent();
+                     }
                  }
 
             } catch (e) {
