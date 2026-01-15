@@ -230,8 +230,8 @@ body {
 .list { overflow-y: auto; }
 
 .list__item {
-    display: grid;
-    grid-template-columns: 40px 1fr auto;
+    display: flex;
+    justify-content: space-between;
     align-items: center;
     padding: 10px 12px;
     border-bottom: 1px solid var(--border-subtle);
