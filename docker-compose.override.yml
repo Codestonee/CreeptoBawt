@@ -1,0 +1,10 @@
+
+
+# Development overrides for faster iteration
+services:
+  trading-bot:
+    # Mount code for live editing (no rebuild needed)
+    volumes:
+      - ./:/app
+      - /app/venv  # Exclude venv
+      - /app/__pycache__  # Exclude cache

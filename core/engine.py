@@ -76,56 +76,73 @@ class TradingEngine:
         self.strategies.append(strategy)
 
     async def start(self):
-        """Start all async processes."""
+        """Start all async processes with correct ordering."""
         self.running = True
         logger.info("Starting Trading Engine...")
-
-        # Check for old emergency stop file
+        
+        # Check emergency stop
         if os.path.exists("EMERGENCY_STOP.flag"):
-            logger.warning("⚠️ FOUND OLD EMERGENCY STOP FILE. Please remove 'EMERGENCY_STOP.flag' to run properly.")
-
-        # 1. Start CandleProvider (streaming candles)
+            logger.warning("⚠️ EMERGENCY STOP FILE EXISTS - remove to start")
+            return
+        
+        # 1. Start CandleProvider
         self.candle_provider = CandleProvider(
             symbols=self.symbols,
             interval="1m",
             testnet=self.testnet
         )
         await self.candle_provider.start()
-        
-        # Wire CandleProvider to RegimeSupervisor
         self.regime_supervisor.set_candle_provider(self.candle_provider)
-        logger.info(f"📊 CandleProvider started for {len(self.symbols)} symbols")
+        logger.info(f"📊 CandleProvider started")
         
-        # 2. Connect execution handlers
-        # Sync MultiExchangeManager first
+        # 2. Initialize exchange managers
         if hasattr(self, 'multi_manager'):
             await self.multi_manager.initialize()
-            # Merge unified executors into main map
             for name, exc in self.multi_manager.executors.items():
                 self.executors[name] = exc
-                
+        
+        # 3. Connect execution handlers (NO polling yet)
         for name, executor in self.executors.items():
             logger.info(f"Connecting executor: {name}...")
             if hasattr(executor, 'connect'):
                 await executor.connect()
-            
-            # Start polling for CCXT executors
-            if hasattr(executor, 'start_polling'):
-                # Note: start_polling is async but fire-and-forget in CCXTExecutor? 
-                # No, we defined it as async. We should await it?
-                # Actually, in CCXTExecutor it uses create_task internally but is async def.
-                await executor.start_polling(self.symbols)
-
-        # =====================================================================
-        # CRITICAL: Bootstrap exchange state BEFORE reconciliation starts
-        # This prevents "orphan storm" where existing orders get canceled
-        # =====================================================================
-        await self._bootstrap_exchange_state()
         
-        # 3. Start connectors (WebSockets)
+        # =====================================================================
+        # CRITICAL FIX: Bootstrap BEFORE starting any reconciliation/polling
+        # =====================================================================
+        logger.info("🔥 Bootstrapping exchange state (BEFORE reconciliation)...")
+        await self._bootstrap_exchange_state()
+        logger.info("✅ Bootstrap complete")
+        
+        # 4. NOW start polling/reconciliation (after bootstrap)
+        for name, executor in self.executors.items():
+            if hasattr(executor, 'start_polling'):
+                await executor.start_polling(self.symbols)
+        
+        # =====================================================================
+        # CRITICAL FIX: Wire Circuit Breaker to Risk Manager
+        # =====================================================================
+        if hasattr(self, 'risk_manager') and self.risk_manager:
+            # Set up circuit breaker monitoring
+            from risk_engine.circuit_breaker import CircuitBreaker
+            from config.settings import settings
+            
+            self.circuit_breaker = CircuitBreaker(
+                max_position_usd=settings.RISK_MAX_POSITION_PER_SYMBOL_USD,
+                max_drawdown_pct=0.15,  # 15% max drawdown
+                margin_call_threshold=0.85  # 85% margin usage
+            )
+            
+            # Initialize with current capital
+            initial_capital = getattr(settings, 'INITIAL_CAPITAL', 1000.0)
+            self.circuit_breaker.update_equity(initial_capital)
+            
+            logger.info("⚡ Circuit Breaker armed and monitoring")
+        
+        # 5. Start connectors
         tasks = [asyncio.create_task(c.connect()) for c in self.connectors]
         
-        # 4. Start Event Loop
+        # 6. Start Event Loop
         loop_task = asyncio.create_task(self._run_event_loop())
         
         await asyncio.gather(*tasks, loop_task)
@@ -201,43 +218,57 @@ class TradingEngine:
         """Main event loop that processes events."""
         logger.info("Event Loop started.")
         while self.running:
-            # --- EMERGENCY STOP CHECK (Legacy) ---
+            # --- DASHBOARD SIGNAL CHECKS (New) ---
+            # STOP_SIGNAL: Flatten all and stop trading
             if os.path.exists("EMERGENCY_STOP.flag"):
-                logger.critical("🚨 EMERGENCY STOP FILE DETECTED! Shutting down engine immediately.")
-                self.running = False
-                break
-            
-            # --- DASHBOARD SIGNAL CHECKS (New) ---
-            # STOP_SIGNAL: Flatten all and stop trading
-            # --- DASHBOARD SIGNAL CHECKS (New) ---
-            # STOP_SIGNAL: Flatten all and stop trading
-            # STOP_SIGNAL: Flatten all and stop trading
-            if os.path.exists("data/STOP_SIGNAL"):
-                logger.critical("🚨 DASHBOARD STOP SIGNAL! Canceling all orders...")
-                # We do NOT remove it here, Dashboard handles cleanup/status
-                # We just react and die.
+                logger.critical("🚨 EMERGENCY STOP!")
                 await self._emergency_flatten()
                 self.running = False
                 break
             
-            # PAUSE_SIGNAL: Block new orders, let existing settle
+            if os.path.exists("data/STOP_SIGNAL"):
+                logger.critical("🚨 DASHBOARD STOP!")
+                await self._emergency_flatten()
+                self.running = False
+                break
+            
+            # Pause signal
             paused = os.path.exists("data/PAUSE_SIGNAL")
             if paused and not getattr(self, '_pause_logged', False):
-                logger.warning("⏸️ DASHBOARD PAUSE SIGNAL - blocking new orders")
+                logger.warning("⏸️ PAUSED - blocking new orders")
                 self._pause_logged = True
-            elif not paused and getattr(self, '_pause_logged', False):
-                logger.info("▶️ PAUSE CLEARED - resuming trading")
+            elif not paused:
                 self._pause_logged = False
-            # ----------------------------
-
+            
+            # =====================================================================
+            # CRITICAL FIX: Circuit Breaker Monitoring
+            # =====================================================================
+            if hasattr(self, 'circuit_breaker'):
+                # Update equity from all executors
+                # Calculate total equity (async)
+                total_equity = await self._calculate_total_equity()
+                self.circuit_breaker.update_equity(total_equity)
+                
+                # Check if trading allowed
+                if not self.circuit_breaker.can_trade():
+                    status = self.circuit_breaker.get_status()
+                    logger.critical(
+                        f"⚡ CIRCUIT BREAKER {status.level.value}: {status.reason}"
+                    )
+                    
+                    if status.action.value == "EMERGENCY_CLOSE":
+                        await self._emergency_flatten()
+                        self.running = False
+                        break
+                    elif status.action.value in ("HALT", "PAUSE_NEW"):
+                        paused = True
+            
             try:
-                # Wait for next event (timeout to check stop flags frequently)
                 event = await asyncio.wait_for(self.event_queue.get(), timeout=1.0)
                 
                 if isinstance(event, MarketEvent):
                     await self._handle_market_data(event)
                 elif isinstance(event, SignalEvent):
-                    # Block new signals if paused
                     if paused:
                         logger.debug(f"Signal blocked (paused): {event.side} {event.symbol}")
                         continue
@@ -246,16 +277,41 @@ class TradingEngine:
                     await self._handle_regime_change(event)
                 elif isinstance(event, FillEvent):
                     await self._handle_fill(event)
+                    # Update circuit breaker on fills
+                    if hasattr(self, 'circuit_breaker'):
+                        self.circuit_breaker.record_trade_result(event.pnl)
                 elif isinstance(event, FundingRateEvent):
                     await self._handle_funding_rate(event)
                 
                 self.event_queue.task_done()
-
+                
             except asyncio.TimeoutError:
-                # No data for 1 second, loop continues
                 continue
             except Exception as e:
-                logger.error(f"CRITICAL: Event loop error: {e}", exc_info=True)
+                logger.error(f"Event loop error: {e}", exc_info=True)
+
+    async def _calculate_total_equity(self) -> float:
+        """Calculate total equity across all executors."""
+        from config.settings import settings
+        total = getattr(settings, 'INITIAL_CAPITAL', 1000.0)
+        
+        # Add PnL from risk manager
+        if self.risk_manager:
+            total = self.risk_manager.current_balance
+        
+        # Aggregate equity from all executors (multi-exchange support)
+        for name, executor in self.executors.items():
+            if hasattr(executor, 'get_equity'):
+                try:
+                    executor_equity = await executor.get_equity()
+                    total += executor_equity
+                except Exception as e:
+                    logger.warning(f"Failed to get equity from {name}: {e}")
+        
+        # Add unrealized PnL from positions
+        # (Position tracker already includes unrealized PnL in position data)
+        
+        return total
 
     async def _emergency_flatten(self):
         """Cancel all orders and close positions on emergency stop."""
@@ -315,7 +371,7 @@ class TradingEngine:
                 return
         
         # 2. Route to correct Execution Handler
-        target_exchange = getattr(event, 'exchange', 'binance').upper()
+        target_exchange = getattr(event, 'exchange', 'binance').lower()
         
         # Fallback for paper trading or legacy signals
         if getattr(self.settings, 'PAPER_TRADING', False):

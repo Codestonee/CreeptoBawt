@@ -14,9 +14,9 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("EmergencyControls")
 
-SIGNAL_DIR = "signals"
-STOP_FILE = "STOP_ALL"
-PAUSE_FILE = "PAUSE_SIGNAL"
+SIGNAL_DIR = "."  # Root directory, not "signals/"
+STOP_FILE = "EMERGENCY_STOP.flag"  # Match engine.py expectation
+PAUSE_FILE = "data/PAUSE_SIGNAL"   # Match engine.py path
 
 def _ensure_signal_dir():
     if not os.path.exists(SIGNAL_DIR):

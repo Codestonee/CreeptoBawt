@@ -8,7 +8,9 @@ import hmac
 import base64
 import hashlib
 import aiohttp
+import datetime  # Added for time sync
 from typing import Optional, Dict
+
 
 # System Imports
 from core.events import SignalEvent, FillEvent
@@ -39,6 +41,8 @@ class OkxExecutionHandler:
         from config.settings import settings
         self.BASE_URL = getattr(settings, 'OKX_API_URL', self.DEFAULT_BASE_URL)
         
+        self.time_offset = 0 # ms offset
+        
         # Dynamic WS URL based on REST URL (critical for EU users)
         if "eea.okx.com" in self.BASE_URL:
              self.WS_URL = "wss://wseea.okx.com:8443/ws/v5/private"
@@ -66,10 +70,15 @@ class OkxExecutionHandler:
         self._order_trace_map: Dict[str, str] = {}
         
     async def connect(self):
-        """Connect to OKX API and start streams."""
+        """Connect to OKX API."""
         try:
+            # Sync time first
+            await self._sync_time()
+            
+            # OKX V5 uses headers for auth, no persistent session setup needed for REST
+            # But we need WebSocket for data
             self.session = aiohttp.ClientSession()
-            logger.info("✅ Connected to OKX REST Client")
+            logger.info("✅ OKX Execution Handler Connected")
             
             # 1. Fetch Instruments (Dynamic Precision)
             await self._fetch_instrument_info()
@@ -349,14 +358,28 @@ class OkxExecutionHandler:
         )
         return base64.b64encode(mac.digest()).decode()
 
+    async def _sync_time(self):
+        """Sync local time with OKX server time."""
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = f"{self.BASE_URL}/api/v5/public/time"
+                async with session.get(url) as response:
+                    data = await response.json()
+                    if data['code'] == '0':
+                        server_time = int(data['data'][0]['ts'])
+                        local_time = int(time.time() * 1000)
+                        self.time_offset = server_time - local_time
+                        logger.info(f"⏱️ OKX Time Offset: {self.time_offset}ms")
+                    else:
+                        logger.warning(f"Failed to sync time: {data}")
+        except Exception as e:
+            logger.error(f"Time sync error: {e}")
+
     def _get_timestamp(self):
-        return datetime.datetime.utcnow().isoformat()[:-3]+'Z' # OKX format 2020-12-08T09:08:57.715Z
-        # Actually OKX accepts simple ISO or timestamp. Let's use simple.
-        # Wait, OKX docs say: ISO 8601
-        
-    def _get_timestamp(self):
-        # Implementation fix
-        return time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime())
+        # Use sync offset
+        offset_ms = getattr(self, 'time_offset', 0)
+        ts = int(time.time() * 1000) + offset_ms
+        return datetime.datetime.fromtimestamp(ts / 1000.0, tz=datetime.timezone.utc).isoformat()[:-3]+'Z'
 
     def _round_step(self, value, step):
         if step == 0: return value

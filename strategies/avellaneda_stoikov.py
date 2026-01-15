@@ -402,7 +402,6 @@ class AvellanedaStoikovStrategy:
                 'regime': state['regime'],
                 # Convert deques to lists for JSON serialization
                 'returns': list(state['returns']),
-                'returns': list(state['returns']),
                 'fill_times': list(state['fill_times']),
                 'latency_last': state['latency_history'][-1] if state['latency_history'] else 0,
                 'latency_avg': sum(state['latency_history'])/len(state['latency_history']) if state['latency_history'] else 0,
@@ -519,7 +518,11 @@ class AvellanedaStoikovStrategy:
         try:
             # Read from OrderManager - this is the source of truth after reconciliation
             position = await self._order_manager.get_position(symbol)
-            q = position.quantity
+            
+            if position:
+                q = position.quantity
+            else:
+                q = 0.0 # Default to 0 if no position found
             # Sync local state with OrderManager
             if abs(q - state['inventory']) > 0.001:
                 logger.debug(f"[{symbol}] Syncing inventory: local={state['inventory']:.4f} -> OM={q:.4f}")
@@ -706,23 +709,18 @@ class AvellanedaStoikovStrategy:
             # Strong DOWN Trend (Asks >> Bids) -> Don't Buy (Bid)
             elif imbalance < -0.6 or (state['regime'] == 'TRENDING' and imbalance < -0.2):
                 bid_size = 0
-                logger.debug(f"[{symbol}] Trend DOWN (Imbal {imbalance:.2f}) - Cutting BID")
-        
         if bid_size == 0 and ask_size == 0:
             return None
         
-        # Dynamic price precision
-        if mid_price > 1000:
-            decimals = 2
-        elif mid_price > 10:
-            decimals = 3
-        else:
-            decimals = 4
+        # Prevent negative/zero prices
+        if bid_price <= 0 or ask_price <= 0:
+            logger.error(f"[{symbol}] Invalid quote prices: Bid={bid_price}, Ask={ask_price}")
+            return None
             
         return Quote(
             symbol=symbol,
-            bid_price=round(bid_price, decimals),
-            ask_price=round(ask_price, decimals),
+            bid_price=bid_price,
+            ask_price=ask_price,
             bid_size=bid_size,
             ask_size=ask_size,
             timestamp=time.time()
@@ -763,19 +761,22 @@ class AvellanedaStoikovStrategy:
 
         # Determine Precision / Lot Size Steps
         # Heuristic based on price bucket (should ideally come from exchange info)
+        # TODO: Get actual precision from ExchangeManager
         if price > 1000:
-            precision_step = 0.001 # 3 decimals
-        elif symbol == 'solusdt':
-            precision_step = 1.0   # 0 decimals
+            precision_step = 0.001 
         elif price > 10:
-            precision_step = 0.01  # 2 decimals
+            precision_step = 0.01 
         else:
-            precision_step = 0.1   # 1 decimal
+            precision_step = 1.0 if not symbol.endswith('usdt') else 0.1 # Fallback
+            
+        # FIX: Remove hardcoded 'solusdt' check which was dangerous
+        # Sol tick size is 0.01 or 0.001 usually, not 1.0! 
+        # For now, consistent small steps are safer (exchange will round it)
+        precision_step = 0.001 # Safe default for most crypto
             
         # Smart Rounding for Min Notional
-        # We need strictly >= $12 (target_min_usd). 
-        # Simple division might underestimate if we round down later.
-        target_min_usd = 12.0
+        # We need strictly >= RISK_MIN_NOTIONAL_USD (safe buffer). 
+        target_min_usd = settings.RISK_MIN_NOTIONAL_USD
         min_raw = target_min_usd / price if price > 0 else self.base_quantity
         # Ceiling division to next lot step
         min_qty = math.ceil(min_raw / precision_step) * precision_step

@@ -212,13 +212,8 @@ class ReconciliationService:
                 
                 # Full order sync
                 if now - self._last_full_sync > self.FULL_SYNC_INTERVAL:
-                    await self.reconcile_orders()
+                    await self.check_for_discrepancies()
                     self._last_full_sync = now
-                
-                # Position sync
-                if now - self._last_position_sync > self.POSITION_SYNC_INTERVAL:
-                    await self.reconcile_positions()
-                    self._last_position_sync = now
                 
                 await asyncio.sleep(5)
                 
@@ -227,6 +222,28 @@ class ReconciliationService:
             except Exception as e:
                 logger.error(f"Reconciliation error: {e}")
                 await asyncio.sleep(10)
+    
+    async def check_for_discrepancies(self):
+        """
+        Run full reconciliation check (ORDERS ONLY).
+        
+        Note: Position reconciliation is now handled by PositionTracker.
+        This service focuses on finding "Zombie" and "Orphan" orders.
+        """
+        if self._is_reconciling:
+            return
+            
+        self._is_reconciling = True
+        try:
+            # 1. Reconcile Orders (Find zombies/ghosts)
+            await self.reconcile_orders()
+            
+            # Position sync removed - handled by PositionTracker
+            
+        except Exception as e:
+            logger.error(f"Reconciliation check failed: {e}")
+        finally:
+            self._is_reconciling = False
     
     async def reconcile_orders(self):
         """Reconcile local orders with exchange - AUTO-CORRECTING."""
@@ -266,98 +283,93 @@ class ReconciliationService:
     
     async def _handle_ghost_order(self, client_id: str, local_order):
         """
-        Handle a ghost order (exists locally but not on exchange).
-        
-        Strategy:
-        1. Check trade history for this order
-        2. If trades found:
-           a. Process fills
-           b. If NOT fully filled → cancel remainder (it's a zombie!)
-        3. If no trades → mark as CANCELED
+        Handle ghost order with EXCHANGE-SIDE cleanup for zombies.
         """
-        logger.warning(f"🔍 Ghost order detected: {client_id}")
+        logger.warning(f"👻 Ghost order detected: {client_id}")
         
         try:
-            # Check if order was filled by looking at trade history
+            # Check trade history
             trades = await self._fetch_order_trades(local_order.symbol.upper(), client_id)
             
             if trades and len(trades) > 0:
-                # Order had trades - calculate total filled
                 total_qty = sum(float(t.get('qty', 0)) for t in trades)
                 avg_price = sum(
                     float(t.get('price', 0)) * float(t.get('qty', 0)) 
                     for t in trades
                 ) / total_qty if total_qty > 0 else 0
                 
-                # Check if already at or beyond this fill level
                 already_filled = local_order.filled_quantity
                 new_fill_qty = total_qty - already_filled
                 
                 if new_fill_qty > 0:
-                    logger.warning(f"✅ Ghost order {client_id} had fills (qty: {total_qty}, price: {avg_price:.2f})")
-                    
-                    # Process the fill
+                    # Process missing fills
                     try:
                         order = await self.order_manager.process_fill(
                             client_order_id=client_id,
                             filled_qty=new_fill_qty,
                             fill_price=avg_price,
-                            commission=0  # Unknown, will be approximate
+                            commission=0,
+                            is_orphan=False
                         )
                         
-                        # 🐛 ZOMBIE FIX: Check if order was NOT fully filled
-                        # If it's still PARTIAL_FILL, cancel the remainder since
-                        # the order no longer exists on exchange
-                        if order.state == 'PARTIAL_FILL':
+                        # =====================================================
+                        # CRITICAL FIX: Cancel remainder on EXCHANGE too
+                        # =====================================================
+                        if order and order.state == 'PARTIAL_FILL':
                             logger.warning(
-                                f"🧟 Zombie detected! Order {client_id} partially filled "
-                                f"({order.filled_quantity}/{order.quantity}) but gone from exchange. "
-                                f"Canceling remainder."
+                                f"🧟 Zombie order {client_id}: Partially filled but "
+                                f"gone from exchange - canceling on BOTH sides"
                             )
+                            
+                            # 1. Try to cancel on exchange (may fail if already gone)
+                            try:
+                                # Get exchange order ID from order history
+                                exchange_orders = await self._fetch_open_orders()
+                                matching = [
+                                    o for o in exchange_orders 
+                                    if o.get('clientOrderId') == client_id
+                                ]
+                                
+                                if matching:
+                                    await self._cancel_order_on_exchange(
+                                        local_order.symbol.upper(),
+                                        matching[0].get('orderId')
+                                    )
+                                    logger.info(f"✅ Canceled zombie {client_id} on exchange")
+                            except Exception as e:
+                                logger.debug(f"Zombie already gone from exchange: {e}")
+                            
+                            # 2. Cancel locally
                             await self.order_manager.cancel_order(client_id)
+                            
                             self._add_discrepancy(Discrepancy(
                                 type=DiscrepancyType.GHOST_ORDER,
                                 symbol=local_order.symbol,
-                                details=f"Zombie order {client_id}: Filled {order.filled_quantity}, canceled remainder",
+                                details=f"Zombie {client_id}: Filled {order.filled_quantity}, canceled remainder on BOTH sides",
                                 action_taken=ActionTaken.MARKED_CANCELED
                             ))
                         else:
                             self._add_discrepancy(Discrepancy(
                                 type=DiscrepancyType.GHOST_ORDER,
                                 symbol=local_order.symbol,
-                                details=f"Marked {client_id} as FILLED from trade history",
+                                details=f"Ghost {client_id} fully filled from history",
                                 action_taken=ActionTaken.MARKED_FILLED
                             ))
+                            
                     except Exception as e:
-                        logger.error(f"Failed to process ghost order fills: {e}")
+                        logger.error(f"Failed to process ghost fills: {e}")
                 else:
-                    # Already processed these fills, but order still in local open orders
-                    # This means it's a zombie - cancel it
-                    logger.warning(f"🧟 Zombie order {client_id}: Already filled {already_filled}, canceling stale local record")
-                    try:
-                        await self.order_manager.cancel_order(client_id)
-                        self._add_discrepancy(Discrepancy(
-                            type=DiscrepancyType.GHOST_ORDER,
-                            symbol=local_order.symbol,
-                            details=f"Canceled zombie order {client_id} (fills already processed)",
-                            action_taken=ActionTaken.MARKED_CANCELED
-                        ))
-                    except Exception as e:
-                        logger.error(f"Failed to cancel zombie order: {e}")
-            else:
-                # No trades found - order was canceled or expired without any fills
-                logger.warning(f"🚫 Ghost order {client_id} was CANCELED (no trades found)")
-                
-                try:
+                    # Already processed - just clean up local state
                     await self.order_manager.cancel_order(client_id)
-                    self._add_discrepancy(Discrepancy(
-                        type=DiscrepancyType.GHOST_ORDER,
-                        symbol=local_order.symbol,
-                        details=f"Marked {client_id} as CANCELED (not on exchange, no trades)",
-                        action_taken=ActionTaken.MARKED_CANCELED
-                    ))
-                except Exception as e:
-                    logger.error(f"Failed to mark ghost order as canceled: {e}")
+            else:
+                # No trades - order was canceled/expired
+                await self.order_manager.cancel_order(client_id)
+                self._add_discrepancy(Discrepancy(
+                    type=DiscrepancyType.GHOST_ORDER,
+                    symbol=local_order.symbol,
+                    details=f"Ghost {client_id} canceled (no trades)",
+                    action_taken=ActionTaken.MARKED_CANCELED
+                ))
             
             self._corrected_orders.add(client_id)
             

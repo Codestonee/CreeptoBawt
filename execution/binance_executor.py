@@ -67,12 +67,8 @@ class BinanceExecutionHandler:
         self.reconciliation: Optional[ReconciliationService] = None
         
         # Deterministic Order Router for limit chasing
-        self.order_router = DeterministicOrderRouter(
-            reprice_interval_ms=300,  # 300ms between reprices
-            max_repricings=5,         # 5 attempts before market fallback
-            min_update_interval_ms=300,
-            tick_tolerance=1
-        )
+        # Deterministic Order Router for limit chasing
+        self.order_router = DeterministicOrderRouter()
         
         # API credentials
         self.api_key = os.getenv("BINANCE_TESTNET_API_KEY")
@@ -98,7 +94,10 @@ class BinanceExecutionHandler:
                 self.api_secret,
                 testnet=self.testnet
             )
-            logger.info("✅ Connected to Binance REST API")
+            
+            # Apply calculated offset to client to prevent -1021 errors
+            self.client.timestamp_offset = self.time_sync.offset_ms
+            logger.info(f"✅ Connected to Binance REST API (Offset: {self.time_sync.offset_ms}ms)")
             
             # --- COMPONENT INITIALIZATION (CRITICAL ORDER) ---
             

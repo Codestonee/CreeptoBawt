@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SERQET | Strike Command</title>
+    <link href="style.css" rel="stylesheet" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Orbitron:wght@400;700;900&family=Rajdhani:wght@500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+  </head>
+  <body>
+    <!-- Header -->
+    <header class="header-bar">
+      <div class="header-left">
+        <div class="brand">
+          <svg viewBox="0 0 100 100" class="logo-svg">
+            <path
+              d="M50 20 L55 30 L65 30 L60 40 L65 50 L55 60 L50 80 L45 60 L35 50 L40 40 L35 30 L45 30 Z"
+              fill="#b8a566"
+            />
+          </svg>
+          <div class="title-wrapper">
+            <div class="main-title">SERQET</div>
+            <div class="sub-title">STRIKE SYSTEM</div>
+          </div>
+        </div>
+        <div class="status-pill active" id="system-status">● ACTIVE</div>
+      </div>
+      <div class="header-right">
+        <div class="clock" id="clock">00:00:00</div>
+      </div>
+    </header>
+
+    <!-- Main Layout -->
+    <div class="grid-container">
+      <!-- Left Column -->
+      <div class="column">
+        <!-- Emergency -->
+        <div class="card">
+          <div class="card-title">⚠️ EMERGENCY CONTROLS</div>
+          <div class="btn-group">
+            <button class="btn btn-warning" onclick="sendAction('pause')">
+              ⏸️ PAUSE
+            </button>
+            <button class="btn btn-danger" onclick="sendAction('flatten')">
+              🛑 FLATTEN
+            </button>
+          </div>
+        </div>
+
+        <!-- Account -->
+        <div class="card">
+          <div class="card-title">💰 ACCOUNT STATUS</div>
+          <div class="metric-large" id="net-liq">$0.00</div>
+          <div class="metric-row">
+            <div class="metric-box">
+              <div class="label">Realized</div>
+              <div class="value" id="realized-pnl">$0.00</div>
+            </div>
+            <div class="metric-box">
+              <div class="label">Unrealized</div>
+              <div class="value" id="unrealized-pnl">$0.00</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Performance -->
+        <div class="card">
+          <div class="card-title">📊 PERFORMANCE</div>
+          <div class="metric-row">
+            <div class="metric-box">
+              <div class="label">Win Rate</div>
+              <div class="value" id="win-rate">0%</div>
+            </div>
+            <div class="metric-box">
+              <div class="label">Maker Rate</div>
+              <div class="value" id="maker-rate">0%</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+        <!-- Center Column -->
+        <div class="column" style="flex: 2;">
+            <!-- Tabs -->
+            <div class="tabs">
+                <div class="tab active" onclick="switchTab('equity')" id="btn-equity">📈 EQUITY & POSITIONS</div>
+                <div class="tab" onclick="switchTab('strategy')" id="btn-strategy">🧠 STRATEGY</div>
+            </div>
+
+            <!-- TAB CONTENT: EQUITY -->
+            <div id="view-equity" style="display: block;">
+                <!-- Equity Chart -->
+                <div class="card">
+                    <div class="card-title">📈 EQUITY CURVE</div>
+                    <div id="equity-chart" style="height: 350px;"></div>
+                </div>
+
+                <!-- Positions -->
+                <div class="card">
+                    <div class="card-title">📍 POSITIONS</div>
+                    <div id="positions-list">
+                        <div style="text-align:center; padding: 20px; color: #666;">Waiting for data...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TAB CONTENT: STRATEGY -->
+            <div id="view-strategy" style="display: none;">
+                <div class="card">
+                    <div class="card-title">🤖 STRATEGY INTERNALS</div>
+                    <div id="strategy-content">
+                        <div style="text-align:center; padding: 20px; color: #666;">No active strategy state</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+      <!-- Right Column -->
+      <div class="column">
+        <!-- Trades -->
+        <div class="card">
+          <div class="card-title">⚡ ACTIVITY</div>
+          <div id="trades-list" class="scroll-list">
+            <!-- Dynamic Trades -->
+          </div>
+        </div>
+
+        <!-- Logs -->
+        <div class="card">
+          <div class="card-title">📜 LOGS</div>
+          <div id="log-list" class="scroll-list log-container">
+            <!-- Dynamic Logs -->
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+        // WebSocket Connection
+        let socket;
+        let isConnected = false;
+
+        function connect() {
+            const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${proto}//${window.location.host}/ws`;
+            
+            console.log("Connecting to WebSocket:", wsUrl);
+            socket = new WebSocket(wsUrl);
+
+            socket.onopen = () => {
+                console.log("WebSocket Connected");
+                isConnected = true;
+                updateStatus(true);
+            };
+
+            socket.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                updateUI(data);
+            };
+
+            socket.onclose = () => {
+                console.log("WebSocket Disconnected");
+                isConnected = false;
+                updateStatus(false);
+                setTimeout(connect, 3000); // Reconnect after 3s
+            };
+
+            socket.onerror = (error) => {
+                console.error("WebSocket Error:", error);
+                socket.close();
+            };
+        }
+
+        // Clock
+        setInterval(() => {
+            document.getElementById('clock').innerText = new Date().toLocaleTimeString();
+        }, 1000);
+
+        function updateStatus(active) {
+            const el = document.getElementById('system-status');
+            if (active) {
+                // Status is updated via data packet now
+            } else {
+                el.innerText = "● RECONNECTING";
+                el.className = "status-pill error";
+            }
+        }
+
+        async function sendAction(action) {
+            if (action === 'flatten' && !confirm("⚠️ CONFIRM FLATTEN ALL?")) return;
+            
+            try {
+                const res = await fetch(`/api/action/${action}`, { method: 'POST' });
+                const json = await res.json();
+                console.log("Action result:", json);
+                // Visual feedback?
+            } catch (e) {
+                alert("Action failed: " + e);
+            }
+        }
+
+        function updateUI(data) {
+            // Header Stats
+            const health = data.system_health;
+            document.getElementById('system-status').innerHTML = data.status === "ACTIVE" 
+                ? "<span style='color:#3FB950'>● ACTIVE</span>" 
+                : `<span style='color:#F85149'>● ${data.status}</span>`;
+            
+            // Should add these to header if HTML supports it. 
+            // For now, let's stick to the main UI updates.
+
+            // Account
+            document.getElementById('net-liq').innerText = `$${data.balance.toFixed(2)}`;
+            document.getElementById('realized-pnl').innerText = `$${data.realized_pnl.toFixed(2)}`;
+            document.getElementById('unrealized-pnl').innerText = `$${data.unrealized_pnl.toFixed(2)}`;
+
+            document.getElementById('win-rate').innerText = `${data.win_rate_decision.toFixed(1)}%`;
+            document.getElementById('maker-rate').innerText = `${data.maker_rate.toFixed(0)}%`;
+
+            // Best/Worst (We need to add these elements to HTML or repurpose existing)
+            // Since HTML structure is fixed, let's update what we have.
+            
+            // Positions List (Inventory)
+            const posContainer = document.getElementById('positions-list');
+            posContainer.innerHTML = '';
+            const inv = data.inventory || {};
+            if (Object.keys(inv).length === 0) {
+                 posContainer.innerHTML = '<div style="text-align:center; padding: 20px; color: #666;">No positions</div>';
+            } else {
+                for (const [sym, info] of Object.entries(inv)) {
+                    const div = document.createElement('div');
+                    const isLong = info.qty > 0;
+                    const color = isLong ? 'var(--venom-green)' : 'var(--venom-red)';
+                    const pnlColor = info.pnl >= 0 ? 'var(--venom-green)' : 'var(--venom-red)';
+                    
+                    div.style.cssText = `display:flex; justify-content:space-between; padding:8px; margin:4px 0; background:#161B22; border-radius:6px; border-left:3px solid ${color};`;
+                    div.innerHTML = `
+                        <div>
+                            <span style="font-size:1.1rem">💎</span> 
+                            <b style="color:#E6EDF3">${sym}</b> 
+                            <span style="color:${color}; font-size:0.75rem">${isLong ? '📈 LONG' : '📉 SHORT'}</span>
+                        </div>
+                        <div style="text-align:right">
+                            <div style="color:#8B949E; font-size:0.75rem">Size: ${info.qty}</div>
+                            <div style="color:${pnlColor}; font-weight:600">$${info.pnl.toFixed(2)}</div>
+                        </div>
+                    `;
+                    posContainer.appendChild(div);
+                }
+            }
+
+            // Strategy Internals
+            const stratContainer = document.getElementById('strategy-content');
+            const state = data.strategy_state || {};
+            // Pick first symbol for now
+            const syms = Object.keys(state);
+            if (syms.length === 0) {
+                stratContainer.innerHTML = '<div style="text-align:center; padding: 20px; color: #666;">No active strategy state</div>';
+            } else {
+                const sym = syms[0];
+                const s = state[sym];
+                const regimeColor = s.regime === 'MEAN_REVERTING' ? '#3FB950' : '#D29922';
+                
+                stratContainer.innerHTML = `
+                    <div style="margin-bottom:5px; text-align:center; color:#8B949E; font-size:0.8rem">
+                        Displaying: <b style="color:#E6EDF3">${sym.toUpperCase()}</b>
+                    </div>
+                    <div style="display:flex; justify-content:space-around; margin-bottom:10px;">
+                        <div>Regime: <span style='color:${regimeColor}; font-weight:bold'>${s.regime}</span></div>
+                        <div>Vol: <b>${(s.volatility * 10000).toFixed(1)} bps</b></div>
+                    </div>
+                    <hr style="margin:5px 0; border-color:#30363D">
+                    <div style="display:flex; justify-content:space-around; font-family:'JetBrains Mono', monospace; font-size:0.9rem">
+                        <div>γ: <span style="color:#E6EDF3">${s.gamma?.toExponential(2) || 0}</span></div>
+                        <div>κ: <span style="color:#E6EDF3">${s.kappa?.toFixed(4) || 0}</span></div>
+                    </div>
+                `;
+            }
+
+            // Trades List
+            const tradesContainer = document.getElementById('trades-list');
+            tradesContainer.innerHTML = '';
+            
+            data.recent_trades.slice(0, 50).forEach(trade => {
+                const div = document.createElement('div');
+                div.className = 'trade-item';
+                const pnlClass = trade.pnl >= 0 ? 'text-green' : 'text-red';
+                const sideColor = trade.side === "BUY" ? 'var(--venom-green)' : 'var(--venom-red)';
+                const ts = new Date(trade.timestamp * 1000).toLocaleTimeString();
+                
+                div.style.borderLeft = `3px solid ${sideColor}`;
+                div.innerHTML = `
+                    <div class="trade-info">
+                        <span class="trade-ts">${ts}</span>
+                        <div style="display:flex; gap:5px; align-items:center;">
+                            <span class="trade-sym">${trade.symbol}</span>
+                            <span style="color:${sideColor}; border:1px solid ${sideColor}; padding:0 4px; border-radius:3px; font-size:0.6rem;">${trade.side}</span>
+                        </div>
+                    </div>
+                    <div class="trade-pnl ${pnlClass}">$${trade.pnl.toFixed(2)}</div>
+                `;
+                tradesContainer.appendChild(div);
+            });
+
+            // Logs
+            const logContainer = document.getElementById('log-list');
+            logContainer.innerHTML = '';
+            data.logs.forEach(log => {
+                const div = document.createElement('div');
+                div.className = 'log-entry';
+                if (log.includes("ERROR")) div.classList.add('text-red');
+                else if (log.includes("WARNING")) div.classList.add('text-yellow');
+                else if (log.includes("BUY")) div.style.color = "var(--venom-green)";
+                else if (log.includes("SELL")) div.style.color = "var(--venom-red)";
+                div.innerText = log;
+                logContainer.appendChild(div);
+            });
+
+            // Equity Chart
+            renderChart(data.equity_curve);
+        }
+
+        function renderChart(curveData) {
+            if (!curveData || curveData.length === 0) return;
+
+            const x = curveData.map(d => new Date(d.time * 1000));
+            const y = curveData.map(d => d.equity);
+            
+            const start = y[0];
+            const end = y[y.length - 1];
+            const color = end >= start ? '#4ade80' : '#f87171'; // Green/Red
+            const fillColor = end >= start ? 'rgba(74, 222, 128, 0.1)' : 'rgba(248, 113, 113, 0.1)';
+
+            const trace = {
+                x: x, y: y,
+                mode: 'lines',
+                line: { color: color, width: 2 },
+                fill: 'tozeroy',
+                fillcolor: fillColor
+            };
+
+            const layout = {
+                paper_bgcolor: 'rgba(0,0,0,0)',
+                plot_bgcolor: 'rgba(0,0,0,0)',
+                margin: { l: 40, r: 10, t: 10, b: 30 },
+                xaxis: { 
+                    color: '#8a7355',
+                    gridcolor: 'rgba(255, 255, 255, 0.05)',
+                    tickformat: '%H:%M'
+                },
+                yaxis: { 
+                    color: '#8a7355',
+                    gridcolor: 'rgba(255, 255, 255, 0.05)'
+                },
+                height: 350,
+                showlegend: false
+            };
+            const config = { responsive: true, displayModeBar: false };
+            Plotly.newPlot('equity-chart', [trace], layout, config);
+        }
+
+        // Tab Switching
+        function switchTab(tabName) {
+            document.getElementById('view-equity').style.display = 'none';
+            document.getElementById('view-strategy').style.display = 'none';
+            document.getElementById('btn-equity').classList.remove('active');
+            document.getElementById('btn-strategy').classList.remove('active');
+
+            document.getElementById('view-' + tabName).style.display = 'block';
+            document.getElementById('btn-' + tabName).classList.add('active');
+
+            if (tabName === 'equity') window.dispatchEvent(new Event('resize'));
+        }
+        
+        // Start
+        connect();
+    </script>
+  </body>
+</html>

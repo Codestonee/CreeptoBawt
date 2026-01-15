@@ -29,6 +29,7 @@ class Position:
     unrealized_pnl: float
     last_update: datetime
     exchange_confirmed: bool = False  # Is this synced with exchange?
+    version: int = 0  # Atomic version counter
 
 class PositionTracker:
     """
@@ -100,8 +101,26 @@ class PositionTracker:
         logger.info("🔄 Force syncing positions with exchange...")
         
         try:
-            # Get positions from exchange
-            exchange_positions = await self.exchange.get_positions()
+            # Get positions (Adapter for Binance vs Mock)
+            if hasattr(self.exchange, 'futures_account'):  # Binance AsyncClient
+                # We need account info for balances but position info for specific positions
+                # futures_position_information returns list of all positions
+                raw_positions = await self.exchange.futures_position_information()
+                
+                # Map to generic format
+                exchange_positions = []
+                for p in raw_positions:
+                    amt = float(p['positionAmt'])
+                    if abs(amt) > 0.0:  # Use non-zero check if desired, but here we process all
+                        exchange_positions.append({
+                            'symbol': p['symbol'],
+                            'quantity': amt,
+                            'avgPrice': float(p['entryPrice']),
+                            'unrealizedPnl': float(p['unRealizedProfit'])
+                        })
+            else:
+                # Mock / Standard Interface
+                exchange_positions = await self.exchange.get_positions()
             
             async with self._positions_lock:
                 synced_count = 0
@@ -210,7 +229,7 @@ class PositionTracker:
         quantity_delta: float, 
         price: float,
         commission: float = 0.0
-    ):
+    ) -> None:
         """
         Update position after a fill.
         
@@ -233,7 +252,8 @@ class PositionTracker:
                     avg_entry_price=price,
                     unrealized_pnl=0.0,
                     last_update=datetime.now(),
-                    exchange_confirmed=False  # Not confirmed until next sync
+                    exchange_confirmed=False,  # Not confirmed until next sync
+                    version=1 # Initialize version
                 )
                 logger.info(f"📊 NEW POSITION: {symbol} {quantity_delta:.4f} @ ${price:.4f}")
             else:
@@ -266,6 +286,35 @@ class PositionTracker:
                     logger.info(f"📊 POSITION CLOSED: {symbol}")
         
         # Save to DB asynchronously (don't block trading)
+        asyncio.create_task(self._save_position_to_db(symbol))
+
+    async def update_position_from_exchange(
+        self, 
+        symbol: str, 
+        quantity: float, 
+        entry_price: float,
+        unrealized_pnl: float = 0.0
+    ):
+        """
+        Force update a single position from exchange data (Absolute update).
+        """
+        symbol = symbol.lower()
+        async with self._positions_lock:
+            if abs(quantity) > 0.001:
+                self._positions[symbol] = Position(
+                    symbol=symbol,
+                    quantity=quantity,
+                    avg_entry_price=entry_price,
+                    unrealized_pnl=unrealized_pnl,
+                    last_update=datetime.now(),
+                    exchange_confirmed=True
+                )
+                logger.info(f"📊 FORCE UPDATE: {symbol} = {quantity:.4f} @ ${entry_price:.4f}")
+            else:
+                if symbol in self._positions:
+                    del self._positions[symbol]
+                    logger.info(f"📊 FORCE CLOSED: {symbol}")
+        
         asyncio.create_task(self._save_position_to_db(symbol))
     
     async def get_total_exposure(self) -> float:

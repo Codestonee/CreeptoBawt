@@ -1,4 +1,5 @@
 import logging
+import time
 from dataclasses import dataclass
 from typing import Tuple, Dict, Optional, Any
 from datetime import datetime, timedelta
@@ -50,17 +51,16 @@ class RiskGatekeeper:
         side: str
     ) -> RiskCheckResult:
         """
-        Multi-layer risk validation with fail-fast approach.
+        Multi-layer risk validation with atomic position snapshot.
         """
         try:
-            # Normalize inputs
+            # LAYER 0: Emergency halt check
+            if self._trading_halted:
+                return RiskCheckResult(False, f"TRADING HALTED: {self._halt_reason}", "CRITICAL")
+            
             symbol = symbol.lower()
             side = side.upper()
             order_value = abs(quantity * price)
-            
-            # LAYER 0: Emergency halt check (fastest)
-            if self._trading_halted:
-                return RiskCheckResult(False, f"TRADING HALTED: {self._halt_reason}", "CRITICAL")
             
             # LAYER 1: Order sanity checks (no async calls)
             sanity_check = self._check_order_sanity(symbol, quantity, price, order_value)
@@ -79,8 +79,25 @@ class RiskGatekeeper:
                  # For safety, we keep it or rely on local tracking if API is slow
                  pass 
             
-            # LAYER 4: Position limits (async - uses local OrderManager state which is synced)
-            position_check = await self._check_position_limits(symbol, quantity, price, side, order_value)
+            # =====================================================================
+            # CRITICAL FIX: Atomic position snapshot with version check
+            # =====================================================================
+            current_position = await self.position_tracker.get_position(symbol)
+            
+            if current_position:
+                pos_qty = current_position.quantity
+                pos_val = abs(pos_qty * current_position.avg_entry_price)
+                expected_version = current_position.version
+            else:
+                pos_qty = 0.0
+                pos_val = 0.0
+                expected_version = 0
+            
+            # LAYER 4: Position limits (atomic)
+            position_check = await self._check_position_limits_atomic(
+                symbol, quantity, price, side, order_value, 
+                pos_qty, pos_val, expected_version
+            )
             if not position_check.is_allowed:
                 return position_check
             
@@ -93,6 +110,17 @@ class RiskGatekeeper:
             exposure_check = await self._check_exposure_limits(order_value)
             if not exposure_check.is_allowed:
                 return exposure_check
+            
+            # FINAL VERIFICATION: Re-check position version hasn't changed
+            final_position = await self.position_tracker.get_position(symbol)
+            final_version = final_position.version if final_position else 0
+            
+            if final_version != expected_version:
+                return RiskCheckResult(
+                    False, 
+                    f"Race condition detected! Position version changed: {expected_version} -> {final_version}",
+                    "CRITICAL"
+                )
             
             # All checks passed
             self._record_order()
@@ -136,80 +164,54 @@ class RiskGatekeeper:
         
         return RiskCheckResult(True, "Rate limit OK", "INFO")
 
-    async def _check_position_limits(
-        self, 
-        symbol: str, 
-        quantity: float, 
-        price: float, 
-        side: str, 
-        order_value: float
+    async def _check_position_limits_atomic(
+        self,
+        symbol: str,
+        quantity: float,
+        price: float,
+        side: str,
+        order_value: float,
+        current_qty: float,
+        current_val: float,
+        version: float
     ) -> RiskCheckResult:
-        """Check per-symbol position limits using Real/Synced State."""
-        try:
-            # Get REAL position from position tracker (OrderManager)
-            # Expecting Position object: quantity, avg_entry_price
-            current_position = await self.position_tracker.get_position(symbol)
-            
-            if current_position:
-                pos_qty = current_position.quantity
-                pos_val = abs(pos_qty * current_position.avg_entry_price) if pos_qty != 0 else 0
+        """
+        Check position limits using atomic snapshot.
+        Version parameter ensures position hasn't changed during validation.
+        """
+        # Calculate projected position EXACTLY once with snapshot
+        new_value = 0.0
+        
+        if side == 'BUY':
+            if current_qty < 0:
+                # Closing short
+                if quantity <= abs(current_qty):
+                    return RiskCheckResult(True, "Closing short - OK", "INFO")
+                remaining_long = quantity - abs(current_qty)
+                new_value = remaining_long * price
             else:
-                pos_qty = 0.0
-                pos_val = 0.0
-            
-            # Calculate new position after this order
-            # Note: This is an estimation. Fills might be partial.
-            # But we validate based on "Worst Case" (Full Fill).
-            
-            new_value = 0.0
-            
-            if side == 'BUY':
-                # BUY:
-                # If Short (qty < 0): Reduces risk (Closing)
-                # If Long (qty >= 0): Adds risk (Opening)
-                if pos_qty < 0:
-                    # Closing Short
-                    # If buy qty <= abs(short qty), value goes down. OK.
-                    if quantity <= abs(pos_qty):
-                        return RiskCheckResult(True, "Closing short position - OK", "INFO")
-                    # Flip to Long
-                    remaining_long = quantity - abs(pos_qty)
-                    new_value = remaining_long * price
-                else:
-                    # Adding to Long
-                    new_value = pos_val + order_value
+                # Adding to long
+                new_value = current_val + order_value
+        else:
+            if current_qty > 0:
+                # Closing long
+                if quantity <= current_qty:
+                    return RiskCheckResult(True, "Closing long - OK", "INFO")
+                remaining_short = quantity - current_qty
+                new_value = remaining_short * price
             else:
-                # SELL:
-                # If Long (qty > 0): Reduces risk (Closing)
-                # If Short (qty <= 0): Adds risk (Opening)
-                if pos_qty > 0:
-                    # Closing Long
-                    if quantity <= pos_qty:
-                        return RiskCheckResult(True, "Closing long position - OK", "INFO")
-                    # Flip to Short
-                    remaining_short = quantity - pos_qty
-                    new_value = remaining_short * price
-                else:
-                    # Adding to Short
-                    new_value = pos_val + order_value
-            
-            # Check per-symbol limit (if increasing risk)
-            if new_value > self.max_position_per_symbol:
-                 # Allow if we are actually reducing from an even HIGHER state (Emergency Unwind) breaks this logic?
-                 # No, if we are reducing, we caught it in the "Closing" blocks above.
-                 # If we are here, we are INCREASING risk or FLIPPING.
-                return RiskCheckResult(False, 
-                    f"{symbol} position would be ${new_value:.2f} > limit ${self.max_position_per_symbol}", "WARNING")
-            
-            # Check total position count (unique symbols)
-            # Not easily available from OrderManager without iterating all. 
-            # Skipping for now to avoid perf hit, or add get_active_symbol_count() later.
-            
-            return RiskCheckResult(True, "Position limits OK", "INFO")
-            
-        except Exception as e:
-            logger.error(f"Position limit check failed: {e}")
-            return RiskCheckResult(False, f"Position check error: {e}", "CRITICAL")
+                # Adding to short
+                new_value = current_val + order_value
+        
+        # Check limit
+        if new_value > self.max_position_per_symbol:
+            return RiskCheckResult(
+                False, 
+                f"{symbol} position would be ${new_value:.2f} > limit ${self.max_position_per_symbol}",
+                "WARNING"
+            )
+        
+        return RiskCheckResult(True, "Position limits OK", "INFO")
 
     def _check_daily_loss(self) -> RiskCheckResult:
         """Halt trading if daily loss limit exceeded."""
@@ -227,34 +229,30 @@ class RiskGatekeeper:
         return RiskCheckResult(True, "Daily loss check passed", "INFO")
 
     async def _check_exposure_limits(self, order_value: float) -> RiskCheckResult:
-        """Check total exposure across all positions."""
-        # Accessing all positions might be slow if we have many.
-        # But we must check TOTAL exposure.
-        # Strategy: OrderManager should track 'total_exposure_usd' property.
-        # For now, we mock it or fetch it if method exists.
-        
-        # NOTE: OrderManager currently doesn't have `get_total_exposure()`.
-        # WE NEED TO ADD IT TO ORDER MANAGER or iterate.
-        # Let's iterate if not too many keys.
+        """
+        Check total exposure - FAIL-SAFE on error (was allowing on error).
+        """
         try:
-             # Assuming we can inspect internal cache or add method.
-             # self.position_tracker.positions is Dict[symbol, Position]
-             total_exposure = 0.0
-             if hasattr(self.position_tracker, 'positions'):
-                 for pos in self.position_tracker.positions.values():
-                     total_exposure += abs(pos.quantity * pos.avg_entry_price)
-             
-             projected_exposure = total_exposure + order_value
-             
-             if projected_exposure > self.max_total_exposure:
-                 return RiskCheckResult(False, 
-                    f"Total exposure ${projected_exposure:.2f} > limit ${self.max_total_exposure}", "WARNING")
-             
-             return RiskCheckResult(True, "Exposure check passed", "INFO")
-             
+            total_exposure = await self.position_tracker.get_total_exposure()
+            projected_exposure = total_exposure + order_value
+            
+            if projected_exposure > self.max_total_exposure:
+                return RiskCheckResult(
+                    False, 
+                    f"Exposure ${projected_exposure:.2f} > limit ${self.max_total_exposure}",
+                    "WARNING"
+                )
+            
+            return RiskCheckResult(True, "Exposure OK", "INFO")
+            
         except Exception as e:
-            logger.warning(f"Total exposure check error (defaulting to allow): {e}")
-            return RiskCheckResult(True, "Exposure check skipped (error)", "INFO")
+            logger.error(f"Exposure check failed: {e}")
+            # CRITICAL FIX: Reject on error (was allowing)
+            return RiskCheckResult(
+                False, 
+                f"Exposure check failed: {e} - REJECTING FOR SAFETY",
+                "CRITICAL"
+            )
 
     def _is_approved_symbol(self, symbol: str) -> bool:
         """Check if symbol is in approved trading list."""

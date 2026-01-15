@@ -3,8 +3,6 @@ import logging
 import sys
 import signal
 import io
-import signal
-import io
 import gc
 import aiosqlite # NEW: For async DB checks
 
@@ -40,107 +38,24 @@ from analysis.hmm_regime_detector import RegimeSupervisorHMM
 # NEW: Telegram Alerts for remote monitoring
 from utils.telegram_alerts import get_telegram_alerter
 
-# ==============================================================================
-# CLEAN LOGGING CONFIGURATION
-# ==============================================================================
-# Console: Show only important messages in a clean format
-# File: Log everything for debugging
+# NEW: Centralized logging
+from utils.logging_config import setup_logging
 
-# Custom formatter for clean console output
-class CleanFormatter(logging.Formatter):
-    """Clean, readable log format for console."""
-    
-    # Emoji indicators for quick visual scanning
-    LEVEL_ICONS = {
-        'DEBUG': '🔍',
-        'INFO': '📋',
-        'WARNING': '⚠️',
-        'ERROR': '❌',
-        'CRITICAL': '🚨'
-    }
-    
-    def format(self, record):
-        # Shorten module names: "Strategy.AvellanedaStoikov" -> "MM"
-        name_map = {
-            'Strategy.AvellanedaStoikov': 'MM',
-            'Execution.Binance': 'BIN',
-            'Execution.OKX': 'OKX',
-            'Execution.OrderManager': 'ORD',
-            'Execution.Reconciliation': 'SYNC',
-            'Core.Engine': 'ENG',
-            'Data.ShadowBook': 'BOOK',
-            'Data.CandleProvider': 'CANDLE',
-            'Analysis.Regime': 'REGIME',
-            'Main': 'MAIN',
-        }
-        short_name = name_map.get(record.name, record.name.split('.')[-1][:6].upper())
-        
-        # Time only (HH:MM:SS)
-        time_str = self.formatTime(record, '%H:%M:%S')
-        
-        # Icon for level
-        icon = self.LEVEL_ICONS.get(record.levelname, '')
-        
-        return f"{time_str} [{short_name:6}] {icon} {record.getMessage()}"
-
-# Console handler - clean format, only INFO+
-console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setLevel(logging.INFO)
-console_handler.setFormatter(CleanFormatter())
-
-from logging.handlers import RotatingFileHandler
-
-# File handler - detailed format, everything
-# Rotating Log: Max 10MB per file, keep last 5 backups
-# Rotating Log: Max 10MB per file, keep last 5 backups
-file_handler = RotatingFileHandler(
-    "logs/bot_execution.log", 
-    maxBytes=10*1024*1024, # 10MB
-    backupCount=5,
-    encoding='utf-8'
-)
-
-# ...
-
-# Dashboard handler - condensed format for UI
-# Rotating Log: Max 1MB, keep 1 backup (Dashboard only reads last 20 lines)
-dashboard_handler = RotatingFileHandler(
-    "logs/dashboard_log.txt", 
-    maxBytes=1*1024*1024, # 1MB
-    backupCount=1,
-    encoding='utf-8'
-)
-file_handler.setLevel(logging.DEBUG)
-file_handler.setFormatter(logging.Formatter(
-    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-))
-
-
-dashboard_handler.setLevel(logging.INFO)
-dashboard_handler.setFormatter(logging.Formatter(
-    '%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S'
-))
-
-# Root logger
-logging.basicConfig(
-    level=logging.DEBUG,  # Capture all, handlers filter
-    handlers=[console_handler, file_handler, dashboard_handler]
-)
-
-# Quiet down noisy modules (only show warnings+)
-for noisy in ['Execution.Reconciliation', 'Data.ShadowBook', 'Data.CandleProvider', 
-              'Utils.TimeSync', 'Utils.NonceService', 'Core.EventStore']:
-    logging.getLogger(noisy).setLevel(logging.WARNING)
-
+# Initialize logging immediately
+setup_logging(settings.LOG_LEVEL)
 logger = logging.getLogger("Main")
 
 
 
 
 
-async def shutdown(engine, shadow_book, regime_supervisor, loop):
+async def shutdown(engine, shadow_book, regime_supervisor, loop, stop_event=None):
     """Graceful shutdown with ShadowBook and HMM cleanup."""
     logger.warning("Shutdown initiated. Cleaning up...")
+    
+    # Signal circuit breaker monitor to stop
+    if stop_event:
+        stop_event.set()
     
     # Send Telegram alert
     alerter = get_telegram_alerter()
@@ -217,12 +132,27 @@ async def monitor_circuit_breaker(stop_event: asyncio.Event):
                 # Signal Files (Moved to shared volume)
                 STOP_SIGNAL_FILE = "data/STOP_SIGNAL"
                 PAUSE_SIGNAL_FILE = "data/PAUSE_SIGNAL"
+                # Ensure directory exists
+                os.makedirs(os.path.dirname(STOP_SIGNAL_FILE), exist_ok=True)
                 with open(STOP_SIGNAL_FILE, "w") as f:
                     f.write("CIRCUIT_BREAKER_TRIGGERED")
                 
-                # Force exit
+                # Signal shutdown gracefully instead of hard exit
+                # This allows cleanup, database saves, and proper shutdown
+                logger.critical("🚨 Triggering graceful shutdown via stop event...")
+                stop_event.set()
+                
+                # Give shutdown handlers time to run (max 10 seconds)
+                for _ in range(10):
+                    if stop_event.is_set(): 
+                        # actually we are just waiting for main loop to exit
+                        pass
+                    await asyncio.sleep(1)
+                
+                # Only use hard exit as last resort if graceful shutdown fails
+                logger.critical("🚨 Graceful shutdown timed out - Forcing EXIT")
                 import os
-                os._exit(1) # Hard kill to ensure positions stop processing
+                os._exit(1)
                 
         except Exception as e:
             logger.error(f"Circuit Breaker Error: {e}")
@@ -259,8 +189,7 @@ def main():
     logger.info("🧠 Initializing HMM Regime Detector...")
     regime_supervisor = RegimeSupervisorHMM(settings.TRADING_SYMBOLS)
     regime_supervisor.start()  # Starts background retraining processes
-    logger.info("✅ HMM Regime Detector started (background retrainer active)"
-    )
+    logger.info("✅ HMM Regime Detector started (background retrainer active)")
 
     # 3. Initialize Connector (Trades/Ticks to Engine)
     binance_connector = BinanceFuturesConnector(
@@ -287,19 +216,13 @@ def main():
     else:
         logger.warning("No trading symbols configured. Strategy not started.")
 
-    # Signal handlers (Unix) - reuse existing loop from startup check
-    if sys.platform != 'win32':
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(
-                sig, 
-                lambda: asyncio.create_task(shutdown(engine, shadow_book, regime_supervisor, loop))
-            )
-    else:
+    # Signal handlers (Windows only - Unix handlers set up after stop_event is created)
+    if sys.platform == 'win32':
         logger.info("Windows detected: Registering SIGTERM handler...")
         def handle_sigterm(signum, frame):
             logger.warning("Received SIGTERM. triggering shutdown...")
             raise KeyboardInterrupt()
-            
+        
         signal.signal(signal.SIGTERM, handle_sigterm)
 
     # Run everything
@@ -321,7 +244,14 @@ def main():
         
         # Start Circuit Breaker Monitor
         stop_event = asyncio.Event()
-        loop.create_task(monitor_circuit_breaker(stop_event))
+        circuit_breaker_task = loop.create_task(monitor_circuit_breaker(stop_event))
+        
+        # Set up Unix signal handlers with stop_event available
+        if sys.platform != 'win32':
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                def make_handler(evt=stop_event):
+                    return lambda: asyncio.create_task(shutdown(engine, shadow_book, regime_supervisor, loop, evt))
+                loop.add_signal_handler(sig, make_handler())
         
         # Send Telegram startup alert
         alerter = get_telegram_alerter()
@@ -330,7 +260,7 @@ def main():
         loop.run_until_complete(engine.start())
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt received. Shutting down...")
-        loop.run_until_complete(shutdown(engine, shadow_book, regime_supervisor, loop))
+        loop.run_until_complete(shutdown(engine, shadow_book, regime_supervisor, loop, stop_event))
     except Exception as e:
         logger.critical(f"Fatal startup error: {e}", exc_info=True)
     finally:

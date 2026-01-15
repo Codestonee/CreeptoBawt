@@ -23,6 +23,7 @@ import time
 from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, Optional
+import numpy as np
 
 from config.settings import settings
 from core.events import SignalEvent
@@ -111,22 +112,12 @@ class InventoryHedger:
         price: float
     ) -> HedgeAction:
         """
-        Check if inventory needs hedging and execute if necessary.
-        
-        Args:
-            symbol: Trading symbol
-            inventory: Current MM inventory (positive=long, negative=short)
-            price: Current price
-            
-        Returns:
-            HedgeAction taken
+        Check and hedge with stack prevention.
         """
         if not self._enabled:
             return HedgeAction.NONE
         
         symbol = symbol.lower()
-        
-        # Calculate inventory value
         inventory_usd = abs(inventory * price)
         threshold_usd = self._max_position_usd * self._threshold_pct
         
@@ -146,31 +137,48 @@ class InventoryHedger:
         position.mm_inventory = inventory
         position.net_delta = inventory + position.hedge_qty
         
-        # Check if hedge needed
-        if inventory_usd < threshold_usd:
-            # Below threshold - no hedge needed
-            # But if we have an existing hedge and inventory recovered, close it
-            if abs(position.hedge_qty) > 0 and inventory_usd < threshold_usd * 0.5:
-                return await self._close_hedge(position, price)
+        # =====================================================================
+        # CRITICAL FIX: Check net delta, not raw inventory
+        # =====================================================================
+        net_exposure_usd = abs(position.net_delta * price)
+        
+        # If net delta is small, we're already hedged
+        if net_exposure_usd < threshold_usd * 0.3:
+            logger.debug(
+                f"[{symbol}] Net delta ${net_exposure_usd:.0f} < threshold "
+                f"(inventory={inventory:.4f}, hedge={position.hedge_qty:.4f})"
+            )
             return HedgeAction.NONE
+        
+        # Close hedge if inventory recovered
+        if inventory_usd < threshold_usd * 0.5 and abs(position.hedge_qty) > 0:
+            return await self._close_hedge(position, price)
         
         # Check cooldown
         now = time.time()
         if now - position.last_hedge_time < self.MIN_HEDGE_INTERVAL_SECONDS:
             return HedgeAction.NONE
         
-        # Calculate required hedge
-        # Target: net_delta = 0
-        required_hedge = -inventory  # Opposite of inventory
-        current_hedge = position.hedge_qty
-        adjustment = required_hedge - current_hedge
+        # =====================================================================
+        # CRITICAL FIX: Calculate hedge adjustment to TARGET net_delta = 0
+        # NOT to hedge raw inventory (which would double-hedge)
+        # =====================================================================
+        required_hedge = -position.net_delta  # Target: net = 0
+        adjustment = required_hedge - position.hedge_qty
         
-        # Skip if adjustment too small
         adjustment_usd = abs(adjustment * price)
         if adjustment_usd < self.MIN_HEDGE_SIZE_USD:
             return HedgeAction.NONE
         
-        # Execute hedge
+        # Prevent hedge stacking by capping total hedge size
+        max_hedge_qty = abs(inventory) * 1.1  # Allow 10% overshoot
+        if abs(position.hedge_qty + adjustment) > max_hedge_qty:
+            logger.warning(
+                f"[{symbol}] Hedge adjustment ${adjustment_usd:.0f} would exceed "
+                f"max hedge size ${max_hedge_qty * price:.0f} - capping"
+            )
+            adjustment = np.sign(adjustment) * (max_hedge_qty - abs(position.hedge_qty))
+        
         return await self._execute_hedge(position, adjustment, price)
     
     async def _execute_hedge(
