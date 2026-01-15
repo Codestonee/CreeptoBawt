@@ -9,12 +9,13 @@ from core.events import MarketEvent, SignalEvent, RegimeEvent, FillEvent, Fundin
 
 # Modules
 from analysis.regime_supervisor import RegimeSupervisor
-from risk_engine.risk_manager import RiskManager
+from risk_engine.risk_manager import RiskManager, PortfolioPosition, RiskState
 from execution.simulated import MockExecutionHandler
 from execution.binance_executor import BinanceExecutionHandler
 # from execution.okx_executor import OkxExecutionHandler # Deprecated
 from execution.ccxt_executor import CCXTExecutor
 from data.candle_provider import CandleProvider
+import time
 
 # Load environment variables
 load_dotenv()
@@ -22,10 +23,18 @@ load_dotenv()
 logger = logging.getLogger("Core.Engine")
 
 class TradingEngine:
+    """Core trading engine with event-driven architecture."""
+    
+    # Maximum consecutive errors before forcing shutdown
+    MAX_CONSECUTIVE_ERRORS = 10
+    # Event queue size limit to prevent memory exhaustion
+    EVENT_QUEUE_MAXSIZE = 10000
+    
     def __init__(self, settings):
         self.settings = settings
         self.running = False
-        self.event_queue = asyncio.Queue()
+        self.event_queue = asyncio.Queue(maxsize=self.EVENT_QUEUE_MAXSIZE)
+        self._consecutive_errors = 0
         
         # Get trading symbols
         self.symbols = getattr(settings, 'TRADING_SYMBOLS', ['btcusdt'])
@@ -145,7 +154,10 @@ class TradingEngine:
         # 6. Start Event Loop
         loop_task = asyncio.create_task(self._run_event_loop())
         
-        await asyncio.gather(*tasks, loop_task)
+        # 5. Start Watchdog
+        watchdog_task = asyncio.create_task(self._watchdog_loop())
+        
+        await asyncio.gather(*tasks, loop_task, watchdog_task)
 
     async def _bootstrap_exchange_state(self):
         """
@@ -315,87 +327,144 @@ class TradingEngine:
 
     async def _emergency_flatten(self):
         """Cancel all orders and close positions on emergency stop."""
-        logger.critical("🚨 EMERGENCY FLATTEN: Canceling all orders...")
+        logger.critical("🚨 EMERGENCY FLATTEN: Initiating...")
         
         for name, executor in self.executors.items():
             try:
-                # Cancel all open orders
+                # 1. Cancel orders
                 if hasattr(executor, 'cancel_all_orders'):
                     await executor.cancel_all_orders()
-                    logger.info(f"✅ Canceled all orders on {name}")
                 
-                # Flatten positions (if method exists)
+                # 2. VERIFY cancellation
+                await asyncio.sleep(0.5)  # Brief delay for exchange
+                if hasattr(executor, 'reconciliation') and executor.reconciliation:
+                    remaining = await executor.reconciliation._fetch_open_orders()
+                    if remaining:
+                        logger.error(f"⚠️ {len(remaining)} orders still open on {name} - retrying...")
+                        # Force cancel with exchange API directly if accessible
+                        if hasattr(executor, 'client') and executor.client:
+                            for order in remaining:
+                                try:
+                                    await executor.client.cancel_order(
+                                        symbol=order['symbol'],
+                                        orderId=order['orderId']
+                                    )
+                                except Exception as inner_e:
+                                    logger.error(f"Failed to force cancel: {inner_e}")
+                
+                # 3. Flatten positions (if method exists)
                 if hasattr(executor, 'flatten_all_positions'):
                     await executor.flatten_all_positions()
-                    logger.info(f"✅ Flattened positions on {name}")
+                    
+                    # 4. VERIFY positions closed
+                    await asyncio.sleep(1.0)
+                    if hasattr(executor, 'reconciliation') and executor.reconciliation:
+                        pos_snapshot = await executor.reconciliation._fetch_positions()
+                        non_zero = {k: v for k, v in pos_snapshot.items() 
+                                   if abs(float(v.get('positionAmt', 0))) > 0.001}
+                        if non_zero:
+                            logger.critical(f"🔴 POSITIONS STILL OPEN: {non_zero}")
+                        else:
+                            logger.info(f"✅ All positions closed on {name}")
+                else:
+                    logger.info(f"✅ Canceled orders on {name} (No flatten method)")
                     
             except Exception as e:
-                logger.error(f"❌ Failed to flatten {name}: {e}")
+                logger.error(f"❌ Emergency flatten failed for {name}: {e}")
 
     async def _handle_market_data(self, event: MarketEvent):
-        """Hanterar inkommande prisdata."""
-        # 1. Update Execution Handlers (for simulator ticking)
+        """Handle incoming price data."""
         for executor in self.executors.values():
             if hasattr(executor, 'on_tick'):
                 await executor.on_tick(event)
 
-        # 2. SÄKERHETSKONTROLL: Global Kill Switch
+        # Global kill switch check and Risk Update
         if self.risk_manager:
-            # Calculate total equity across all executors
-            total_equity = self.risk_manager.current_balance # Base balance
-            # Add PnL from all executors if possible
-            # TODO: Aggregate equity correctly from multi-exchange
+            total_equity = self.risk_manager.current_balance
             
-            # Om kontot blöder för mycket -> NÖDSTOPP
-            if not self.risk_manager.check_account_health(total_equity):
-                logger.critical("⛔ ACCOUNT HEALTH CRITICAL. STOPPING ENGINE.")
+            # BUILD position list for risk calculation
+            positions = []
+            for executor in self.executors.values():
+                # Try to get positions from OrderManager or PositionTracker
+                if hasattr(executor, 'order_manager') and hasattr(executor.order_manager, 'positions'):
+                    for symbol, pos in executor.order_manager.positions.items():
+                        positions.append(PortfolioPosition(
+                            symbol=symbol,
+                            size=pos.quantity,
+                            mark_price=event.price if event.symbol == symbol else pos.mark_price,
+                            unrealized_pnl=pos.unrealized_pnl
+                        ))
+                elif hasattr(executor, 'position_tracker') and executor.position_tracker:
+                   # Fallback to position tracker directly if exposed
+                   for symbol, pos in executor.position_tracker.positions.items():
+                        positions.append(PortfolioPosition(
+                            symbol=symbol,
+                            size=pos.quantity,
+                            mark_price=event.price if event.symbol == symbol else pos.mark_price,
+                            unrealized_pnl=pos.unrealized_pnl
+                        ))
+
+            # UPDATE risk state with full portfolio
+            # Sum unrealized pnl from positions
+            current_pnl = sum(p.unrealized_pnl for p in positions)
+            
+            # Using current balance + pnl as proxy for equity if not synced
+            metrics = self.risk_manager.update(
+                current_pnl=current_pnl,
+                current_balance=total_equity,
+                positions=positions  # ← CRITICAL: Pass positions for CVaR
+            )
+            
+            if metrics.state == RiskState.STOP:
+                logger.critical(f"RISK STATE: STOP | Drawdown: {metrics.current_drawdown:.2%}")
+                logger.critical("ACCOUNT HEALTH CRITICAL. STOPPING ENGINE.")
+                await self._emergency_flatten()
                 self.running = False
                 return
 
-        # 3. Uppdatera Marknadsanalys (Regime)
+        # Update market regime analysis
         if self.regime_supervisor:
             await self.regime_supervisor.update(event)
             
-        # 4. Skicka data till strategier
+        # Forward data to strategies
         for strategy in self.strategies:
             await strategy.on_tick(event)
 
     async def _handle_signal(self, event: SignalEvent):
-        """Hanterar köp/sälj-signaler från strategier."""
+        """Handle buy/sell signals from strategies."""
         symbol = event.symbol.upper()
         
-        # 1. Validera via Risk Manager
+        # Validate via Risk Manager
         if self.risk_manager:
             if not self.risk_manager.validate_signal(event):
-                logger.warning(f"❌ REJECTED: {event.side} {event.quantity} {symbol}")
+                logger.warning(f"REJECTED: {event.side} {event.quantity} {symbol}")
                 return
         
         # 2. Route to correct Execution Handler
         target_exchange = getattr(event, 'exchange', 'binance').lower()
         
-        # Fallback for paper trading or legacy signals
         if getattr(self.settings, 'PAPER_TRADING', False):
             target_exchange = 'PAPER'
             
         executor = self.executors.get(target_exchange.lower())
         
         if executor:
-            logger.info(f"📤 {event.side} {event.quantity} {symbol} @ ${event.price:,.2f} → {target_exchange}")
+            logger.info(f"{event.side} {event.quantity} {symbol} @ ${event.price:,.2f} -> {target_exchange}")
             await executor.execute(event)
         else:
             logger.error(f"No executor for: {target_exchange}")
 
     async def _handle_fill(self, event: FillEvent):
-        """Hanterar bekräftade avslut (Fills)."""
+        """Handle confirmed fills."""
         logger.info(f"FILL CONFIRMED: {event.side} {event.quantity} {event.symbol} @ {event.price}")
         
-        # Meddela strategierna så de kan uppdatera sina positioner
+        # Notify strategies so they can update their positions
         for strategy in self.strategies:
             if hasattr(strategy, 'on_fill'):
                 await strategy.on_fill(event)
 
     async def _handle_regime_change(self, event: RegimeEvent):
-        """Hanterar förändringar i marknadsläget (Trend vs Range)."""
+        """Handle market regime changes (Trend vs Range)."""
         logger.info(f"MARKET REGIME CHANGE: {event.symbol} -> {event.regime} (ADX: {event.adx:.2f})")
         for strategy in self.strategies:
             if hasattr(strategy, 'on_regime_change'):
@@ -421,8 +490,43 @@ class TradingEngine:
         
         logger.info("Engine stopped.")
 
-    async def _handle_funding_rate(self, event: FundingRateEvent):
-        """Pass funding rate updates to interested strategies."""
-        for strategy in self.strategies:
             if hasattr(strategy, 'on_funding_rate'):
                 await strategy.on_funding_rate(event)
+
+    async def _watchdog_loop(self):
+        """Monitor for stuck states and alive heartbeat."""
+        logger.info("Watchdog started.")
+        last_event_time = time.time()
+        
+        while self.running:
+            await asyncio.sleep(30)  # Check every 30s
+            
+            # 1. Check if we're still receiving events (optional, maybe too strict for low liquid assets)
+            # if time.time() - last_event_time > 300: # 5 mins
+            #    logger.warning("⚠️ No events received in 5 mins - WebSocket may be idel")
+            
+            # 2. Check for stuck orders
+            for executor in self.executors.values():
+                if hasattr(executor, 'order_manager'):
+                    stuck = executor.order_manager.get_stuck_orders(timeout_seconds=300)
+                    if stuck:
+                        logger.warning(f"Found {len(stuck)} stuck orders - auto-canceling")
+                        for order_id in stuck:
+                            if hasattr(executor, 'cancel_order'):
+                                await executor.cancel_order(order_id)
+
+    def get_risk_snapshot(self) -> dict:
+        """Expose risk state for dashboard."""
+        if not self.risk_manager:
+            return {}
+        
+        return {
+            'state': self.risk_manager.current_state.value,
+            'position_multiplier': self.risk_manager._get_position_multiplier(
+                abs(self.risk_manager.cumulative_loss) / 
+                (self.risk_manager.initial_balance * self.risk_manager.daily_cvar_limit) if self.risk_manager.daily_cvar_limit > 0 else 0
+            ),
+            'drawdown_pct': (self.risk_manager.peak_balance - self.risk_manager.current_balance) / 
+                            self.risk_manager.peak_balance if self.risk_manager.peak_balance > 0 else 0,
+            'circuit_breaker': self.risk_manager.circuit_breaker.get_status().__dict__ if hasattr(self.risk_manager.circuit_breaker, 'get_status') else {}
+        }

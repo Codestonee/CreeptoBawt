@@ -10,13 +10,17 @@ class Event:
 
 @dataclass(kw_only=True)
 class MarketEvent(Event):
-    """Marknadsdata (Prisuppdateringar)."""
+    """Market data (price updates with optional bid/ask for arbitrage)."""
     exchange: str
     symbol: str
     price: float
     volume: float = 0.0
     side: str = ""  # 'BUY' or 'SELL' for aggTrade (for VPIN)
     event_type: str = "TICK"  # TICK, BOOK, TRADE
+    bid: Optional[float] = None  # Best bid price (for arbitrage)
+    ask: Optional[float] = None  # Best ask price (for arbitrage)
+    bid_size: float = 0.0  # Best bid size
+    ask_size: float = 0.0  # Best ask size
 
 @dataclass(kw_only=True)
 class RegimeEvent(Event):

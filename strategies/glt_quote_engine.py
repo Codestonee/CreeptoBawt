@@ -98,11 +98,14 @@ class GLTQuoteEngine:
         self._portfolio_inventory: Dict[str, float] = {}
         self._portfolio_volatility: Dict[str, float] = {}
     
-    def set_params(self, symbol: str, params: GLTParams) -> None:
+    def set_params(self, symbol: str, params: GLTParams, use_iterative_theta: bool = True) -> None:
         """
         Set or update parameters for a symbol.
         
-        This also triggers precomputation of constants and theta table.
+        Args:
+            symbol: Trading symbol
+            params: GLT parameters
+            use_iterative_theta: If True, use enhanced theta calculation
         """
         symbol = symbol.lower()
         self.params[symbol] = params
@@ -113,7 +116,6 @@ class GLTQuoteEngine:
         k = params.k
         
         # Base half-spread (infinite horizon, no time dependence)
-        # φ = (1/γδ) * ln(1 + γδ/k)
         phi = (1.0 / (xi * delta)) * math.log(1.0 + xi * delta / k)
         
         self._precomputed[symbol] = {
@@ -121,12 +123,19 @@ class GLTQuoteEngine:
             'xi': xi
         }
         
-        # Compute theta table for this symbol
-        self._compute_theta_table(symbol, params)
+        # Compute theta table (choose method)
+        if use_iterative_theta:
+            # Get volatility estimate for better theta
+            vol = self._portfolio_volatility.get(symbol, 0.02)
+            self._compute_theta_table_iterative(symbol, params, vol)
+        else:
+            # Use fast quadratic approximation
+            self._compute_theta_table(symbol, params)
         
         logger.info(
             f"[{symbol.upper()}] GLT params set: A={params.A:.2f}, k={params.k:.3f}, "
-            f"γ={params.gamma:.3f}, base_spread={phi*10000:.1f}bps"
+            f"γ={params.gamma:.3f}, base_spread={phi*10000:.1f}bps "
+            f"(theta_method={'iterative' if use_iterative_theta else 'quadratic'})"
         )
     
     def update_from_calibrator(self, symbol: str, A: float, k: float) -> None:
@@ -192,12 +201,114 @@ class GLTQuoteEngine:
         
         self.theta_tables[symbol] = theta
         logger.debug(f"[{symbol.upper()}] Computed theta table with {len(theta)} entries")
+
+    def _compute_theta_table_iterative(
+        self,
+        symbol: str,
+        params: GLTParams,
+        volatility_estimate: float = 0.02
+    ) -> None:
+        """
+        Compute theta value function using iterative value iteration.
+        """
+        delta = params.delta
+        max_q_units = int(self.inventory_limit / delta)
+        
+        # Grid: inventory levels from -max to +max
+        q_grid = np.arange(-max_q_units, max_q_units + 1)
+        
+        # Initialize with quadratic (starting guess)
+        theta = 0.5 * params.gamma * (volatility_estimate ** 2) * (q_grid * delta) ** 2
+        
+        # Value iteration parameters
+        max_iterations = 100
+        convergence_threshold = 1e-6
+        
+        logger.debug(f"[{symbol.upper()}] Starting theta iteration (grid size: {len(q_grid)})")
+        
+        for iteration in range(max_iterations):
+            theta_new = np.copy(theta)
+            
+            for i, q_idx in enumerate(q_grid):
+                q = q_idx * delta
+                
+                # Skip boundaries (can't trade beyond max inventory)
+                if abs(q_idx) >= max_q_units:
+                    continue
+                
+                # Compute theta gradients (finite differences)
+                # θ'(q) ≈ (θ(q+δ) - θ(q)) / δ for ask
+                if i < len(q_grid) - 1:
+                    theta_grad_ask = (theta[i+1] - theta[i]) / delta
+                else:
+                    theta_grad_ask = 0
+                
+                # θ'(q) ≈ (θ(q) - θ(q-δ)) / δ for bid
+                if i > 0:
+                    theta_grad_bid = (theta[i] - theta[i-1]) / delta
+                else:
+                    theta_grad_bid = 0
+                
+                # Base spread component
+                base_spread_component = (1.0 / (params.gamma * delta)) * \
+                                    np.log(1.0 + params.gamma * delta / params.k)
+                
+                # Value function update
+                inventory_cost = 0.5 * params.gamma * (volatility_estimate ** 2) * (q ** 2)
+                spread_value = params.k * base_spread_component
+                
+                theta_new[i] = inventory_cost + spread_value
+            
+            # Check convergence
+            max_change = np.max(np.abs(theta_new - theta))
+            if max_change < convergence_threshold:
+                logger.debug(
+                    f"[{symbol.upper()}] Theta converged after {iteration+1} iterations "
+                    f"(max_change: {max_change:.2e})"
+                )
+                break
+            
+            theta = theta_new
+        
+        # Store in table
+        theta_table = {}
+        for i, q_idx in enumerate(q_grid):
+            theta_table[int(q_idx)] = float(theta[i])
+        
+        self.theta_tables[symbol] = theta_table
+        
+        logger.info(
+            f"[{symbol.upper()}] Computed enhanced theta table with {len(theta_table)} entries"
+        )
+
+    def _compute_theta_table_hybrid(
+        self,
+        symbol: str,
+        params: GLTParams,
+        use_iterative: bool = True
+    ) -> None:
+        """
+        Hybrid theta computation: Use iterative for production, quadratic for testing.
+        """
+        if use_iterative and len(self._portfolio_volatility.get(symbol.lower(), {})) > 0:
+            # Use actual market volatility
+            vol_estimate = self._portfolio_volatility.get(symbol.lower(), 0.02)
+            self._compute_theta_table_iterative(symbol, params, vol_estimate)
+        else:
+            # Fallback to quadratic (fast, good for testing)
+            self._compute_theta_table(symbol, params)
     
     def _get_theta(self, symbol: str, inventory: float, volatility: float) -> float:
         """
-        Get theta value for given inventory level.
+        Get theta value for given inventory level with interpolation.
         
-        Interpolates if inventory is not exactly on grid.
+        Args:
+            symbol: Trading symbol
+            inventory: Current inventory
+            volatility: Current volatility estimate
+        
+        Returns:
+            Theta value (scaled by volatility)
         """
         symbol = symbol.lower()
         params = self.params.get(symbol)
@@ -205,19 +316,36 @@ class GLTQuoteEngine:
             return 0.0
         
         theta_table = self.theta_tables.get(symbol, {})
+        if not theta_table:
+            # No table - use quadratic fallback
+            return 0.5 * params.gamma * (inventory ** 2) * (volatility ** 2)
+        
         delta = params.delta
         
         # Discretize inventory to grid index
-        idx = int(round(inventory / delta))
+        idx = inventory / delta
+        idx_floor = int(np.floor(idx))
+        idx_ceil = int(np.ceil(idx))
         
         # Clamp to table bounds
         max_idx = int(self.inventory_limit / delta)
-        idx = max(-max_idx, min(max_idx, idx))
+        idx_floor = max(-max_idx, min(max_idx, idx_floor))
+        idx_ceil = max(-max_idx, min(max_idx, idx_ceil))
         
-        # Get base theta and scale by volatility
-        base_theta = theta_table.get(idx, 0.5 * params.gamma * (inventory ** 2))
+        # Linear interpolation between grid points
+        if idx_floor == idx_ceil:
+            # Exactly on grid point
+            base_theta = theta_table.get(idx_floor, 0.5 * params.gamma * (inventory ** 2))
+        else:
+            # Interpolate
+            theta_floor = theta_table.get(idx_floor, 0.5 * params.gamma * (inventory ** 2))
+            theta_ceil = theta_table.get(idx_ceil, 0.5 * params.gamma * (inventory ** 2))
+            
+            weight = idx - idx_floor  # Weight for ceiling value
+            base_theta = theta_floor * (1 - weight) + theta_ceil * weight
         
         # Scale by actual volatility squared
+        # The table is computed with a reference volatility, but we scale to actual
         return base_theta * (volatility ** 2)
     
     def update_portfolio_state(

@@ -93,7 +93,7 @@ class PositionTracker:
     async def force_sync_with_exchange(self) -> bool:
         """
         Force synchronization with exchange.
-        This is the CRITICAL function that failed in your logs.
+        CRITICAL FIX: Use correct Binance Futures API endpoint.
         
         Returns:
             True if sync successful, False otherwise
@@ -126,56 +126,67 @@ class PositionTracker:
                 synced_count = 0
                 mismatch_count = 0
                 
+                # Parse exchange positions
+                exchange_positions_map = {}
+                for p in raw_positions:
+                    symbol = p['symbol'].lower()
+                    qty = float(p.get('positionAmt', 0))
+                    
+                    # Only track non-zero positions
+                    if abs(qty) > 0.0001:
+                        exchange_positions_map[symbol] = {
+                            'symbol': symbol,
+                            'quantity': qty,
+                            'avgPrice': float(p.get('entryPrice', 0)),
+                            'unrealizedPnl': float(p.get('unrealizedProfit', 0)),
+                            'leverage': int(p.get('leverage', 1)),
+                            'marginType': p.get('marginType', 'cross')
+                        }
+                
                 # Get all symbols we have locally
                 local_symbols = set(self._positions.keys())
+                exchange_symbols = set(exchange_positions_map.keys())
                 
-                # Get all symbols from exchange
-                exchange_symbols = set()
-                for exch_pos in exchange_positions:
-                    symbol = exch_pos['symbol'].lower()
-                    exchange_symbols.add(symbol)
-                    exch_qty = float(exch_pos.get('quantity', 0))
-                    exch_price = float(exch_pos.get('avgPrice', 0))
+                # 1. Update/Create positions from exchange
+                for symbol, exch_data in exchange_positions_map.items():
+                    exch_qty = exch_data['quantity']
+                    exch_price = exch_data['avgPrice']
+                    exch_pnl = exch_data['unrealizedPnl']
                     
-                    # Check if we have this position locally
                     local_pos = self._positions.get(symbol)
                     
                     if local_pos:
                         # Check for mismatch
-                        if abs(local_pos.quantity - exch_qty) > 0.001:  # Allow small rounding
+                        if abs(local_pos.quantity - exch_qty) > 0.001:
                             logger.warning(
-                                f"⚠️ POSITION MISMATCH {symbol}: "
+                                f"⚠️ POSITION MISMATCH {symbol.upper()}: "
                                 f"Local={local_pos.quantity:.4f}, Exchange={exch_qty:.4f}"
                             )
                             mismatch_count += 1
                     
                     # Exchange is source of truth - overwrite local
-                    if abs(exch_qty) > 0.001:  # Non-zero position
-                        self._positions[symbol] = Position(
-                            symbol=symbol,
-                            quantity=exch_qty,
-                            avg_entry_price=exch_price,
-                            unrealized_pnl=float(exch_pos.get('unrealizedPnl', 0)),
-                            last_update=datetime.now(),
-                            exchange_confirmed=True
-                        )
-                        synced_count += 1
-                    elif symbol in self._positions:
-                        # Position closed on exchange - remove locally
-                        del self._positions[symbol]
-                        synced_count += 1
+                    self._positions[symbol] = Position(
+                        symbol=symbol,
+                        quantity=exch_qty,
+                        avg_entry_price=exch_price,
+                        unrealized_pnl=exch_pnl,
+                        last_update=datetime.now(),
+                        exchange_confirmed=True
+                    )
+                    synced_count += 1
                 
-                # Check for phantom positions (local but not on exchange)
+                # 2. Remove phantom positions (local but not on exchange)
                 phantom_symbols = local_symbols - exchange_symbols
                 for symbol in phantom_symbols:
                     if abs(self._positions[symbol].quantity) > 0.001:
                         logger.warning(
-                            f"⚠️ PHANTOM POSITION {symbol}: "
-                            f"Local={self._positions[symbol].quantity:.4f}, Exchange=0.0"
+                            f"⚠️ PHANTOM POSITION {symbol.upper()}: "
+                            f"Local={self._positions[symbol].quantity:.4f}, Exchange=0.0 - REMOVING"
                         )
                         mismatch_count += 1
-                        # Remove phantom position
-                        del self._positions[symbol]
+                    
+                    # Remove phantom position
+                    del self._positions[symbol]
                 
                 # Update sync state
                 self._is_synced = True
@@ -186,9 +197,17 @@ class PositionTracker:
                 asyncio.create_task(self._save_to_db())
                 
                 logger.info(
-                    f"✅ Position sync complete: {synced_count} synced, "
-                    f"{mismatch_count} mismatches resolved"
+                    f"✅ Position sync complete: {synced_count} positions synced, "
+                    f"{mismatch_count} discrepancies resolved"
                 )
+                
+                # Log current positions for visibility
+                if self._positions:
+                    for pos in self._positions.values():
+                        logger.info(
+                            f"   📊 {pos.symbol.upper()}: {pos.quantity:+.4f} @ "
+                            f"${pos.avg_entry_price:.2f} | PnL: ${pos.unrealized_pnl:+.2f}"
+                        )
                 
                 return True
                 

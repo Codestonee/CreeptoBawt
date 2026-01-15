@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Logs (will be mounted as volume)
+logs/
+*.log
+
+# Data (will be mounted as volume)
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Cache
+*.pyc
+.pytest_cache/
+.mypy_cache/
+
+# Secrets
+.env
+.env.local
+*.key
+*.pem
+
+# Build
+dist/
+build/
+*.egg-info/
+
+# Documentation
+docs/_build/
+*.md
+
+# Backtest cache (large files)
+data/backtest_cache/*.parquet

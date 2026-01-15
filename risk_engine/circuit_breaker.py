@@ -19,12 +19,24 @@ logger = logging.getLogger("Risk.CircuitBreaker")
 
 
 class BreakerLevel(str, Enum):
-    """Circuit breaker severity levels."""
+    """Circuit breaker severity levels with ordinal for proper comparison."""
     NORMAL = "NORMAL"           # All systems go
     L1_POSITION = "L1_POSITION"  # Position limit hit
     L2_HEAT = "L2_HEAT"         # Portfolio heat high
     L3_DRAWDOWN = "L3_DRAWDOWN"  # Drawdown limit hit
     L4_EMERGENCY = "L4_EMERGENCY"  # Margin call imminent
+    
+    @property
+    def severity(self) -> int:
+        """Return numeric severity for proper comparison."""
+        order = {
+            "NORMAL": 0,
+            "L1_POSITION": 1,
+            "L2_HEAT": 2,
+            "L3_DRAWDOWN": 3,
+            "L4_EMERGENCY": 4,
+        }
+        return order.get(self.value, 0)
 
 
 class BreakerAction(str, Enum):
@@ -231,13 +243,13 @@ class CircuitBreaker:
         threshold: float
     ):
         """Trigger a circuit breaker level."""
-        # Only escalate, never de-escalate automatically
-        if level.value > self._current_level.value:
+        # Only escalate, never de-escalate automatically (use severity for proper ordering)
+        if level.severity > self._current_level.severity:
             self._current_level = level
             self._trigger_reason = reason
             self._triggered_at = time.time()
             
-            logger.critical(f"⚡ CIRCUIT BREAKER {level.value}: {reason}")
+            logger.critical(f"CIRCUIT BREAKER {level.value}: {reason}")
     
     def _check_daily_reset(self):
         """Reset daily PnL at midnight UTC."""

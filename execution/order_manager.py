@@ -93,25 +93,30 @@ class OrderManager:
     Coordinator between:
     - Strategies (Submit orders)
     - Risk Gatekeeper (Validate orders)
+    - Risk Manager (Kill switch enforcement)
     - Position Tracker (Update state)
     - Database Manager (Persist state)
     """
     
-    def __init__(self, exchange_client, db_manager: DatabaseManager, position_tracker: PositionTracker, risk_gatekeeper: RiskGatekeeper):
+    def __init__(self, exchange_client, db_manager: DatabaseManager, position_tracker: PositionTracker, risk_gatekeeper: RiskGatekeeper, risk_manager=None):
         self.exchange = exchange_client
         self.db = db_manager
         self.position_tracker = position_tracker
         self.risk_gatekeeper = risk_gatekeeper
+        self.risk_manager = risk_manager  # For kill switch enforcement
         self._event_store = get_event_store()
         
         # In-memory order cache (for fast lookup)
-        # In production, might want to limit size or use LRU
         self._orders: Dict[str, Order] = {}
+        
+        # Order timeout tracking
+        self._order_timeouts: Dict[str, float] = {}  # client_order_id -> created_time
+        self.order_timeout_sec = 300  # 5 minutes default
         
         # Register as global instance
         _set_global_instance(self)
         
-        logger.info("✅ OrderManager initialized")
+        logger.info("OrderManager initialized")
     
     async def initialize(self):
         """Initialize the order manager and restore state from DB."""
@@ -237,7 +242,7 @@ class OrderManager:
             )
             
             if not risk_result.is_allowed:
-                logger.warning(f"❌ Order REJECTED by risk: {risk_result.reason}")
+                logger.warning(f"Order REJECTED by risk: {risk_result.reason}")
                 return None
             
             # 2. CREATE ORDER (Local State)
@@ -354,6 +359,107 @@ class OrderManager:
             OrderState.REJECTED,
             error_message=error_message
         )
+    
+    async def register_existing_order(
+        self,
+        client_order_id: str,
+        exchange_order_id: str,
+        symbol: str,
+        side: str,
+        quantity: float,
+        price: float,
+        order_type: str = "LIMIT",
+        filled_quantity: float = 0.0
+    ) -> Order:
+        """
+        Register an existing order (from exchange or router).
+        Used during:
+        1. Startup bootstrap (existing exchange orders)
+        2. Router repricing (new order IDs generated mid-chase)
+        
+        Args:
+            client_order_id: Our client order ID
+            exchange_order_id: Exchange's order ID
+            symbol: Trading pair
+            side: BUY or SELL
+            quantity: Order quantity
+            price: Order price
+            order_type: LIMIT, MARKET, etc.
+            filled_quantity: Already filled quantity (if partial)
+        
+        Returns:
+            Registered Order object
+        """
+        # Check if already exists
+        existing = self._orders.get(client_order_id)
+        if existing:
+            logger.debug(f"Order {client_order_id} already registered")
+            return existing
+        
+        # Create order record
+        order = Order(
+            client_order_id=client_order_id,
+            exchange_order_id=exchange_order_id,
+            trace_id=f"registered_{client_order_id[-8:]}",
+            symbol=symbol.lower(),
+            side=side.upper(),
+            order_type=order_type,
+            time_in_force="GTC",  # Assume GTC for existing
+            quantity=quantity,
+            filled_quantity=filled_quantity,
+            remainder_quantity=quantity - filled_quantity,
+            price=price,
+            state=OrderState.SUBMITTED.value,  # Already on exchange
+            created_at=time.time(),
+            updated_at=time.time()
+        )
+        
+        # Add to cache
+        self._orders[client_order_id] = order
+        
+        # Persist to DB (async, non-blocking)
+        try:
+            await self.db.insert_order({
+                'client_order_id': order.client_order_id,
+                'exchange_order_id': exchange_order_id,
+                'trace_id': order.trace_id,
+                'symbol': order.symbol,
+                'side': order.side,
+                'order_type': order.order_type,
+                'time_in_force': order.time_in_force,
+                'quantity': order.quantity,
+                'price': order.price,
+                'state': order.state,
+                'created_at': order.created_at,
+                'updated_at': order.updated_at
+            })
+        except Exception as e:
+            logger.warning(f"Failed to persist registered order {client_order_id}: {e}")
+        
+        logger.info(
+            f"📝 Registered existing order: {client_order_id} "
+            f"({side} {quantity} {symbol.upper()} @ ${price:.2f})"
+        )
+        
+        return order
+
+
+    async def get_stuck_orders(self, timeout_seconds: float = 300) -> List[str]:
+        """
+        Get list of orders stuck in SUBMITTED state for too long.
+        """
+        now = time.time()
+        stuck = []
+        
+        for order in self._orders.values():
+            if order.state != OrderState.SUBMITTED.value:
+                continue
+            
+            age = now - order.created_at
+            if age > timeout_seconds:
+                stuck.append(order.client_order_id)
+        
+        return stuck
     
     async def process_fill(
         self,

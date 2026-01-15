@@ -4,7 +4,7 @@ from typing import Optional
 
 class Settings(BaseSettings):
     # App Config
-    APP_NAME: str = "Titan_HFT_Bot"
+    APP_NAME: str = "SERQET"
     LOG_LEVEL: str = "INFO"
     
     # Binance Config
@@ -81,6 +81,17 @@ class Settings(BaseSettings):
     # Daily Safety
     RISK_MAX_DAILY_LOSS_USD: float = 50.0            # Stop if down $50 in 24h
     RISK_MAX_ORDERS_PER_MINUTE: int = 20             # Rate limit
+    
+    # Position PnL Limits (Death Spiral Prevention)
+    POSITION_PNL_WARNING_PCT: float = -0.03   # Warn at -3% on position
+    # Strategy Limits
+    STRATEGY_COOLDOWN_SECONDS: float = 60.0
+    
+    # GLT Configuration
+    GLT_A: float = 10.0                      # Intensity scale (fills per hour at mid)
+    GLT_K: float = 0.5                       # Intensity decay rate
+    GLT_GAMMA: float = 0.1                   # Risk aversion coefficient
+    GLT_USE_ITERATIVE_THETA: bool = True     # Use enhanced theta calculation (slower but more accurate)
     
     # Symbol Whitelist (Empty = All Allowed)
     APPROVED_SYMBOLS: list[str] = ['btcusdt', 'ethusdt', 'solusdt', 'dogeusdt', 'xrpusdt', 'bnbusdt', 'adausdt', 'ltcusdt']

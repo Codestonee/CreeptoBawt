@@ -72,12 +72,11 @@ class RiskGatekeeper:
             if not rate_check.is_allowed:
                 return rate_check
             
-            # LAYER 3: Capital & margin checks (async API call)
-            # Only do this check if client is connected
+            # LAYER 3: Margin check (async API call if client available)
             if self.exchange_client:
-                 # Note: margin check is expensive/slow, maybe skip for very small orders?
-                 # For safety, we keep it or rely on local tracking if API is slow
-                 pass 
+                margin_check = await self._check_margin_availability(order_value)
+                if not margin_check.is_allowed:
+                    return margin_check
             
             # =====================================================================
             # CRITICAL FIX: Atomic position snapshot with version check

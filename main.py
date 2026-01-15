@@ -95,41 +95,30 @@ async def shutdown(engine, shadow_book, regime_supervisor, loop, stop_event=None
 
 async def monitor_circuit_breaker(stop_event: asyncio.Event):
     """
-    SAFETY NET: Periodically check PnL and kill bot if drawdown > 5%.
+    SAFETY NET: Periodically check PnL and trigger graceful shutdown if drawdown > 5%.
     """
     import sqlite3
     from config.settings import settings
     
-    logger.info("🛡️ Circuit Breaker Monitor started")
+    logger.info("Circuit Breaker Monitor started")
     
     while not stop_event.is_set():
         try:
-            # Check every 10 seconds
             await asyncio.sleep(10)
             
-            # 1. Get Total Realized PnL
-            # We open a fresh connection every time to avoid concurrency locks
-            # (sqlite3 is thread-safe for separate connections in read mode)
             async with aiosqlite.connect('data/trading_data.db') as db:
                 async with db.execute("SELECT SUM(pnl) FROM trades") as cursor:
                     row = await cursor.fetchone()
                     total_pnl = row[0] if row and row[0] else 0.0
 
-            # 2. Check Drawdown
-            # Hardcoded 5% of Initial Capital
             limit_loss = settings.INITIAL_CAPITAL * -0.05
             
             if total_pnl < limit_loss:
                 logger.critical("=" * 60)
-                logger.critical(f"🚨 CIRCUIT BREAKER TRIGGERED! PnL ${total_pnl:.2f} < Limit ${limit_loss:.2f}")
-                logger.critical("🚨 INITIATING EMERGENCY SHUTDOWN...")
+                logger.critical(f"CIRCUIT BREAKER TRIGGERED! PnL ${total_pnl:.2f} < Limit ${limit_loss:.2f}")
+                logger.critical("INITIATING GRACEFUL SHUTDOWN...")
                 logger.critical("=" * 60)
                 
-                # Signal shutdown
-                # Raise internal error or cancel all tasks? 
-                # Simplest is to raise KeyboardInterrupt in main loop or set a global stop
-                # We will write to a file that other components watch, then kill self
-                # Signal Files (Moved to shared volume)
                 STOP_SIGNAL_FILE = "data/STOP_SIGNAL"
                 PAUSE_SIGNAL_FILE = "data/PAUSE_SIGNAL"
                 # Ensure directory exists

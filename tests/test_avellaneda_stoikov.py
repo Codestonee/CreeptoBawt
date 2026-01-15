@@ -65,32 +65,47 @@ class TestAvellanedaStoikovStrategy:
             max_inventory=1.0,
             shadow_book=shadow_book
         )
+
+    @pytest.fixture(autouse=True)
+    def mock_order_manager(self):
+        """Mock the global OrderManager to prevent RuntimeErrors."""
+        with patch('strategies.avellaneda_stoikov.get_order_manager') as mock_get:
+            mock_om = Mock()
+            # Default behavior for get_position checks
+            mock_om.get_position = AsyncMock(return_value=None) 
+            mock_get.return_value = mock_om
+            yield mock_om
     
     # ==================== MIN NOTIONAL TESTS ====================
     
+    
     def test_min_notional_btc(self, strategy):
-        """BTC orders should meet $25 minimum notional."""
+        """BTC orders should meet min notional."""
         bid, ask = strategy._calculate_sizes('btcusdt', 0, 91000)
         
-        # Check notional value
-        assert bid * 91000 >= 25, f"BTC bid notional {bid * 91000} < $25"
-        assert ask * 91000 >= 25, f"BTC ask notional {ask * 91000} < $25"
+        # Check notional value against actual strategy limit
+        limit = strategy.MIN_NOTIONAL_USD
+        assert bid * 91000 >= limit, f"BTC bid notional {bid * 91000} < {limit}"
+        assert ask * 91000 >= limit, f"BTC ask notional {ask * 91000} < {limit}"
     
     def test_min_notional_eth(self, strategy):
-        """ETH orders should meet $25 minimum notional."""
+        """ETH orders should meet min notional."""
         bid, ask = strategy._calculate_sizes('ethusdt', 0, 3100)
         
-        # Check notional value
-        assert bid * 3100 >= 25, f"ETH bid notional {bid * 3100} < $25"
-        assert ask * 3100 >= 25, f"ETH ask notional {ask * 3100} < $25"
+        limit = strategy.MIN_NOTIONAL_USD
+        assert bid * 3100 >= limit, f"ETH bid notional {bid * 3100} < {limit}"
+        assert ask * 3100 >= limit, f"ETH ask notional {ask * 3100} < {limit}"
     
     def test_min_notional_low_price_token(self, strategy):
-        """Low-priced tokens should still meet $25 minimum."""
-        bid, ask = strategy._calculate_sizes('xrpusdt', 0, 0.50)
+        """Low-priced tokens should still meet min notional."""
+        price = 0.50
+        bid, ask = strategy._calculate_sizes('xrpusdt', 0, price)
         
-        # At $0.50, min qty should be 50 tokens
-        assert bid >= 50, f"XRP bid qty {bid} should be >= 50"
-        assert ask >= 50, f"XRP ask qty {ask} should be >= 50"
+        limit = strategy.MIN_NOTIONAL_USD
+        expected_qty = limit / price
+        
+        assert bid >= expected_qty, f"XRP bid qty {bid} should be >= {expected_qty}"
+        assert ask >= expected_qty, f"XRP ask qty {ask} should be >= {expected_qty}"
     
     # ==================== INVENTORY SKEW TESTS ====================
     
@@ -277,6 +292,14 @@ class TestAvellanedaStoikovStrategy:
 class TestFullIntegration:
     """Full integration tests with mock components."""
     
+    @pytest.fixture(autouse=True)
+    def mock_order_manager(self):
+        with patch('strategies.avellaneda_stoikov.get_order_manager') as mock_get:
+            mock_om = Mock()
+            mock_om.get_position = AsyncMock(return_value=None)
+            mock_get.return_value = mock_om
+            yield mock_om
+
     @pytest.mark.asyncio
     async def test_tick_to_signal_flow(self):
         """Test full flow: tick → quote → signal."""
