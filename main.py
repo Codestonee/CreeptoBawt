@@ -31,7 +31,7 @@ from strategies.avellaneda_stoikov import AvellanedaStoikovStrategy
 from strategies.funding_arb import FundingArbStrategy
 from strategies.cross_exchange_arb import CrossExchangeArbStrategy
 # NEW: Import ShadowBook for L2 order book data
-from data.shadow_book import get_shadow_book
+from core.shadow_book import get_shadow_book
 # NEW: Import HMM Regime Detector (replaces ADX-based detection)
 from analysis.hmm_regime_detector import RegimeSupervisorHMM
 # from strategies.funding_arb import FundingRateMonitor, CarryTradeManager, run_funding_arb_loop  <-- Removed
@@ -98,6 +98,7 @@ async def monitor_circuit_breaker(stop_event: asyncio.Event):
     SAFETY NET: Periodically check PnL and trigger graceful shutdown if drawdown > 5%.
     """
     import sqlite3
+    import os
     from config.settings import settings
     
     logger.info("Circuit Breaker Monitor started")
@@ -120,32 +121,26 @@ async def monitor_circuit_breaker(stop_event: asyncio.Event):
                 logger.critical("=" * 60)
                 
                 STOP_SIGNAL_FILE = "data/STOP_SIGNAL"
-                PAUSE_SIGNAL_FILE = "data/PAUSE_SIGNAL"
                 # Ensure directory exists
                 os.makedirs(os.path.dirname(STOP_SIGNAL_FILE), exist_ok=True)
                 with open(STOP_SIGNAL_FILE, "w") as f:
                     f.write("CIRCUIT_BREAKER_TRIGGERED")
                 
-                # Signal shutdown gracefully instead of hard exit
-                # This allows cleanup, database saves, and proper shutdown
                 logger.critical("🚨 Triggering graceful shutdown via stop event...")
                 stop_event.set()
                 
-                # Give shutdown handlers time to run (max 10 seconds)
+                # Give shutdown handlers time to run
                 for _ in range(10):
                     if stop_event.is_set(): 
-                        # actually we are just waiting for main loop to exit
                         pass
                     await asyncio.sleep(1)
                 
-                # Only use hard exit as last resort if graceful shutdown fails
                 logger.critical("🚨 Graceful shutdown timed out - Forcing EXIT")
-                import os
                 os._exit(1)
-                
+            
         except Exception as e:
             logger.error(f"Circuit Breaker Error: {e}")
-            await asyncio.sleep(5)  # Backoff
+            await asyncio.sleep(5)
 
 
 
@@ -220,10 +215,10 @@ def main():
         loop.create_task(shadow_book.start())
         logger.info("📈 Shadow Order Book WebSocket started")
         
-        # Start Funding Arbitrage Strategy
-        funding_arb = FundingArbStrategy(event_queue=engine.event_queue)
-        engine.add_strategy(funding_arb)
-        logger.info("💰 Funding Arbitrage Strategy activated")
+        # Start Funding Arbitrage Strategy (DISABLED - requires larger balance)
+        # funding_arb = FundingArbStrategy(event_queue=engine.event_queue, symbols=settings.TRADING_SYMBOLS)
+        # engine.add_strategy(funding_arb)
+        # logger.info("💰 Funding Arbitrage Strategy activated")
 
         # Start Cross-Exchange Arb (if multiple exchanges)
         if len(getattr(settings, 'ACTIVE_EXCHANGES', [])) > 1:

@@ -9,7 +9,8 @@ class Settings(BaseSettings):
     
     # Binance Config
     # IMPORTANT: Names must match your .env file (case-insensitive)
-    BINANCE_WS_URL: str = "wss://fstream.binance.com/ws"
+    BINANCE_WS_URL: str = "wss://fstream.binance.com/ws"  # Futures WS (ignored in spot mode)
+    BINANCE_SPOT_WS_URL: str = "wss://stream.binance.com:9443/ws"  # Spot WS
     BINANCE_API_KEY: str = Field(..., description="Binance API Key")
     BINANCE_API_SECRET: str = Field(..., description="Binance Secret Key")
     
@@ -36,8 +37,9 @@ class Settings(BaseSettings):
     COINBASE_SECRET_KEY: str = Field(default="", description="Coinbase Secret Key", validation_alias="COINBASE_API_SECRET")
 
     # Environment
-    TESTNET: bool = True # Global flag for Testnet vs Mainnet
-    PAPER_TRADING: bool = False # Set to False to use Real Execution (Testnet/Mainnet)
+    TESTNET: bool = False  # Changed to False for mainnet
+    SPOT_MODE: bool = True  # True = Spot trading, False = Futures trading (EU users must use Spot)
+
     
     # Exchange Selection
     EXCHANGE: str = Field(default="binance", description="binance, okx, mexc, bitget, coinbase")
@@ -45,14 +47,21 @@ class Settings(BaseSettings):
     
     # Arbitrage Config
     ARBITRAGE_MIN_SPREAD: float = 0.005  # 0.5% spread
-    ARBITRAGE_PAPER_TRADING: bool = True
+    ARBITRAGE_PAPER_TRADING: bool = False
+    
+    # Funding Arbitrage Config
+    FUNDING_ARB_CONFIG: dict = {
+        "MIN_FUNDING_RATE_PCT": 0.01,  # 0.01% (Normal funding is 0.01%, so this targets elevated rates)
+        "POSITION_SIZE_USD": 50.0,     # Small size for verified safety
+        "EXIT_FUNDING_PCT": 0.002      # Exit when rate calms down
+    }
     
     # Trading Pairs
-    TRADING_SYMBOLS: list[str] = ["btcusdt", "ethusdt", "solusdt", "dogeusdt", "xrpusdt", "bnbusdt", "adausdt", "ltcusdt"]
+    TRADING_SYMBOLS: list[str] = ["ltcusdc", "xrpusdc", "dogeusdc"]  # Reduced to 3 pairs
 
     # Paper Trading Config
-    PAPER_TRADING: bool = True       # True = Simulated, False = Real Money
-    INITIAL_CAPITAL: float = 500.0  # Initial capital for simulation
+    PAPER_TRADING: bool = False       # True = Simulated, False = Real Money
+    INITIAL_CAPITAL: float = 50.0  # Initial capital for simulation
 
     # Strategy Config
     # Avellaneda-Stoikov Parameters
@@ -64,23 +73,24 @@ class Settings(BaseSettings):
     # --------------------------------------------------------------------------
     # RISK MANAGEMENT
     # --------------------------------------------------------------------------
-    MAX_POSITION_USD: float = 500.0  # Maximum notional size per position
-    MIN_NOTIONAL_USD: float = 10.0   # Min order value (Binance >$5)
+    MAX_POSITION_USD: float = 50.0  # Maximum notional size per position
+    MIN_NOTIONAL_USD: float = 5.0   # Binance minimum notional
     
     # --------------------------------------------------------------------------
     # STRICT RISK GATEKEEPER (HARD LIMITS)
     # --------------------------------------------------------------------------
-    RISK_MIN_NOTIONAL_USD: float = 5.0           # Min order value (Binance > $5)
-    RISK_MAX_ORDER_USD: float = 500.0            # Fat finger protection
+    RISK_MIN_NOTIONAL_USD: float = 5.0           # Binance minimum notional
+    RISK_MAX_ORDER_USD: float = 100.0            # Fat finger protection (raised for BTC orders)
     
     # Position Limits
-    RISK_MAX_POSITION_PER_SYMBOL_USD: float = 500.0  # 100% of capital ($500)
-    RISK_MAX_POSITION_TOTAL_USD: float = 1500.0      # Max total exposure (3x leverage potentially)
-    RISK_MAX_OPEN_POSITIONS: int = 5                 # Max concurrent symbols
+    RISK_MAX_POSITION_PER_SYMBOL_USD: float = 1000.0  # Increased to $1000
+    RISK_MAX_POSITION_TOTAL_USD: float = 5000.0       # Increased to $5000
+    RISK_MAX_OPEN_POSITIONS: int = 5                  # Max concurrent symbols
     
     # Daily Safety
     RISK_MAX_DAILY_LOSS_USD: float = 50.0            # Stop if down $50 in 24h
-    RISK_MAX_ORDERS_PER_MINUTE: int = 20             # Rate limit
+    RISK_MAX_DAILY_LOSS_USD: float = 50.0            # Stop if down $50 in 24h
+    RISK_MAX_ORDERS_PER_MINUTE: int = 300            # Rate limit (5/sec avg)
     
     # Position PnL Limits (Death Spiral Prevention)
     POSITION_PNL_WARNING_PCT: float = -0.03   # Warn at -3% on position
@@ -88,13 +98,11 @@ class Settings(BaseSettings):
     STRATEGY_COOLDOWN_SECONDS: float = 60.0
     
     # GLT Configuration
-    GLT_A: float = 10.0                      # Intensity scale (fills per hour at mid)
-    GLT_K: float = 0.5                       # Intensity decay rate
-    GLT_GAMMA: float = 0.1                   # Risk aversion coefficient
+
     GLT_USE_ITERATIVE_THETA: bool = True     # Use enhanced theta calculation (slower but more accurate)
     
     # Symbol Whitelist (Empty = All Allowed)
-    APPROVED_SYMBOLS: list[str] = ['btcusdt', 'ethusdt', 'solusdt', 'dogeusdt', 'xrpusdt', 'bnbusdt', 'adausdt', 'ltcusdt']
+    APPROVED_SYMBOLS: list[str] = ['ltcusdc', 'xrpusdc', 'dogeusdc']  # Reduced to 3 pairs for $50 balance
     
     ADMIN_RESUME_CODE: str = "creep-resume-123"      # Simple code to unhalt
     # --------------------------------------------------------------------------

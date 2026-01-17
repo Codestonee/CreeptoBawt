@@ -93,9 +93,12 @@ class DeterministicOrderRouter:
         Returns:
             {'filled_qty': float, 'avg_price': float} or None if timeout
         """
-        # Create event for this order
-        fill_event = asyncio.Event()
-        self._pending_fills[client_order_id] = fill_event
+        # Create event for this order IF not pre-registered
+        if client_order_id in self._pending_fills:
+            fill_event = self._pending_fills[client_order_id]
+        else:
+            fill_event = asyncio.Event()
+            self._pending_fills[client_order_id] = fill_event
         
         try:
             # Wait for fill or timeout
@@ -168,6 +171,10 @@ class DeterministicOrderRouter:
             # Generate unique order ID for this attempt
             order_cid = f"{client_order_id}_a{attempt}" if client_order_id else None
             
+            # CRITICAL FIX: Pre-register to capture instant fills (Race Condition)
+            if order_cid:
+                self._pending_fills[order_cid] = asyncio.Event()
+            
             try:
                 # Place order
                 order_result = await place_order_fn(
@@ -182,9 +189,13 @@ class DeterministicOrderRouter:
                 order_id = order_result.get('order_id')
                 if not order_id:
                     logger.warning(f"[{symbol}] Order rejected (likely GTX): {order_result}")
+                    # Cleanup pre-registration
+                    if order_cid in self._pending_fills:
+                        del self._pending_fills[order_cid]
+                        
                     continue
                 
-                # CRITICAL: Wait for fill confirmation
+                # Wait for fill confirmation
                 fill_result = await self._wait_for_fill(
                     order_cid or order_id,
                     timeout=self.reprice_interval

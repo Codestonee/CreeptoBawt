@@ -134,7 +134,7 @@ class GLTQuoteEngine:
         
         logger.info(
             f"[{symbol.upper()}] GLT params set: A={params.A:.2f}, k={params.k:.3f}, "
-            f"γ={params.gamma:.3f}, base_spread={phi*10000:.1f}bps "
+            f"γ={params.gamma:.3f}, base_spread=${phi:.4f} "
             f"(theta_method={'iterative' if use_iterative_theta else 'quadratic'})"
         )
     

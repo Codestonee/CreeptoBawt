@@ -11,7 +11,7 @@ from typing import Optional, Dict, List
 
 from core.events import MarketEvent, RegimeEvent
 from analysis.indicators import calculate_adx, calculate_atr
-from data.candle_provider import CandleProvider, Candle
+from core.candle_provider import CandleProvider, Candle
 
 logger = logging.getLogger("Analysis.Regime")
 

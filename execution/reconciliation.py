@@ -24,6 +24,25 @@ from execution.order_manager import get_order_manager, OrderState
 logger = logging.getLogger("Execution.Reconciliation")
 
 
+class AsyncRateLimiter:
+    """Simple token bucket rate limiter for API calls."""
+    
+    def __init__(self, calls_per_second: float = 5.0):
+        self.calls_per_second = calls_per_second
+        self.min_interval = 1.0 / calls_per_second
+        self._last_call = 0.0
+        self._lock = asyncio.Lock()
+    
+    async def acquire(self):
+        """Wait until we can make another API call."""
+        async with self._lock:
+            now = time.time()
+            elapsed = now - self._last_call
+            if elapsed < self.min_interval:
+                await asyncio.sleep(self.min_interval - elapsed)
+            self._last_call = time.time()
+
+
 class DiscrepancyType(str, Enum):
     GHOST_ORDER = "GHOST_ORDER"          # Local order not on exchange
     ORPHAN_ORDER = "ORPHAN_ORDER"        # Exchange order not in local DB
@@ -68,6 +87,7 @@ class ReconciliationService:
     # Configuration
     FULL_SYNC_INTERVAL = 60  # Full reconciliation every 60 seconds
     POSITION_SYNC_INTERVAL = 30  # Position check every 30 seconds
+    CORRECTED_ORDER_TTL = 3600  # 1 hour TTL for corrected orders tracking
     
     # API URLs
     BASE_URL = "https://fapi.binance.com"
@@ -78,13 +98,21 @@ class ReconciliationService:
         api_key: str,
         api_secret: str,
         testnet: bool = True,
-        auto_fix_positions: bool = True  # NEW: Auto-sync positions on mismatch
+        auto_fix_positions: bool = True,  # NEW: Auto-sync positions on mismatch
+        spot_mode: bool = False  # NEW: Spot vs Futures
     ):
         self.api_key = api_key
         self.api_secret = api_secret
         self.testnet = testnet
         self.auto_fix_positions = auto_fix_positions
-        self.base_url = self.BASE_URL_TESTNET if testnet else self.BASE_URL
+        self.spot_mode = spot_mode
+        
+        if self.spot_mode:
+            self.base_url = "https://testnet.binance.vision" if testnet else "https://api.binance.com"
+            logger.info(f"Reconciliation configured for SPOT ({self.base_url})")
+        else:
+            self.base_url = self.BASE_URL_TESTNET if testnet else self.BASE_URL
+            logger.info("Reconciliation configured for FUTURES")
         
         self.order_manager = get_order_manager()
         self._discrepancies: List[Discrepancy] = []
@@ -95,8 +123,14 @@ class ReconciliationService:
         self._last_full_sync = 0.0
         self._last_position_sync = 0.0
         
-        # Track orders we've already corrected (avoid loops)
-        self._corrected_orders: set = set()
+        # Track orders we've already corrected (avoid loops) - WITH TTL
+        self._corrected_orders: Dict[str, float] = {}  # {client_id: timestamp}
+        
+        # Lock for reconciliation state
+        self._is_reconciling: bool = False
+        
+        # Rate limiter for API calls (5 calls/sec = 300/min, well under Binance 1200/min)
+        self._rate_limiter = AsyncRateLimiter(calls_per_second=5.0)
     
     def _sign(self, params: dict) -> str:
         """Generate HMAC SHA256 signature for request."""
@@ -116,6 +150,28 @@ class ReconciliationService:
         self._running = True
         self._sync_task = asyncio.create_task(self._reconciliation_loop())
         logger.info("🔄 ReconciliationService started (auto-correcting mode)")
+    
+    def _cleanup_corrected_orders(self):
+        """Remove expired entries from corrected orders tracking."""
+        now = time.time()
+        expired = [k for k, v in self._corrected_orders.items() if now - v > self.CORRECTED_ORDER_TTL]
+        for k in expired:
+            del self._corrected_orders[k]
+        if expired:
+            logger.debug(f"Cleaned up {len(expired)} expired corrected order entries")
+    
+    def _is_order_corrected(self, client_id: str) -> bool:
+        """Check if order was recently corrected (within TTL)."""
+        if client_id not in self._corrected_orders:
+            return False
+        if time.time() - self._corrected_orders[client_id] > self.CORRECTED_ORDER_TTL:
+            del self._corrected_orders[client_id]
+            return False
+        return True
+    
+    def _mark_order_corrected(self, client_id: str):
+        """Mark an order as corrected with current timestamp."""
+        self._corrected_orders[client_id] = time.time()
     
     async def bootstrap(self) -> dict:
         """
@@ -212,6 +268,7 @@ class ReconciliationService:
                 
                 # Full order sync
                 if now - self._last_full_sync > self.FULL_SYNC_INTERVAL:
+                    self._cleanup_corrected_orders()  # Periodic cleanup
                     await self.check_for_discrepancies()
                     self._last_full_sync = now
                 
@@ -263,7 +320,7 @@ class ReconciliationService:
             # 3. Handle GHOST ORDERS (local but not on exchange)
             for client_id, local_order in local_order_ids.items():
                 if client_id not in exchange_order_ids:
-                    if client_id in self._corrected_orders:
+                    if self._is_order_corrected(client_id):
                         continue  # Already handled
                     
                     await self._handle_ghost_order(client_id, local_order)
@@ -271,7 +328,7 @@ class ReconciliationService:
             # 4. Handle ORPHAN ORDERS (exchange but not local) - PANIC!
             for client_id, exchange_order in exchange_order_ids.items():
                 if client_id not in local_order_ids:
-                    if client_id in self._corrected_orders:
+                    if self._is_order_corrected(client_id):
                         continue
                     
                     await self._handle_orphan_order(client_id, exchange_order)
@@ -371,7 +428,7 @@ class ReconciliationService:
                     action_taken=ActionTaken.MARKED_CANCELED
                 ))
             
-            self._corrected_orders.add(client_id)
+            self._mark_order_corrected(client_id)
             
         except Exception as e:
             logger.error(f"Failed to handle ghost order {client_id}: {e}")
@@ -403,7 +460,7 @@ class ReconciliationService:
             else:
                 logger.error(f"❌ Failed to cancel orphan order {client_id}")
             
-            self._corrected_orders.add(client_id)
+            self._mark_order_corrected(client_id)
             
         except Exception as e:
             logger.error(f"Failed to cancel orphan order {client_id}: {e}")
@@ -525,17 +582,13 @@ class ReconciliationService:
                 # Do NOT cancel immediately here. The order might be so new that OrderManager
                 # hasn't finished registering it yet, but the WebSocket event arrived first.
                 # Let the periodic sync (every 60s) handle true orphans.
-                # logger.warning(f"Real-time orphan detected: {client_id}")
                 pass
-                # await self._handle_orphan_order(client_id, {
-                #     'symbol': order_data.get('s', ''),
-                #     'orderId': order_data.get('i', '')
-                # })
     
     # ==================== API METHODS ====================
     
     async def _fetch_open_orders(self) -> List[dict]:
         """Fetch open orders from exchange."""
+        await self._rate_limiter.acquire()
         params = {
             "timestamp": int(time.time() * 1000),
             "recvWindow": 5000
@@ -543,7 +596,11 @@ class ReconciliationService:
         params["signature"] = self._sign(params)
         
         headers = {"X-MBX-APIKEY": self.api_key}
-        url = f"{self.base_url}/fapi/v1/openOrders"
+        
+        if self.spot_mode:
+            url = f"{self.base_url}/api/v3/openOrders"
+        else:
+            url = f"{self.base_url}/fapi/v1/openOrders"
         
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers, params=params) as response:
@@ -556,6 +613,7 @@ class ReconciliationService:
     
     async def _fetch_positions(self) -> Dict[str, dict]:
         """Fetch positions from exchange."""
+        await self._rate_limiter.acquire()
         params = {
             "timestamp": int(time.time() * 1000),
             "recvWindow": 5000
@@ -563,22 +621,48 @@ class ReconciliationService:
         params["signature"] = self._sign(params)
         
         headers = {"X-MBX-APIKEY": self.api_key}
-        url = f"{self.base_url}/fapi/v2/account"
+        headers = {"X-MBX-APIKEY": self.api_key}
+        
+        if self.spot_mode:
+            url = f"{self.base_url}/api/v3/account"
+        else:
+            url = f"{self.base_url}/fapi/v2/account"
         
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers, params=params) as response:
                 if response.status == 200:
                     data = await response.json()
-                    positions = data.get('positions', [])
-                    return {
-                        p['symbol']: p for p in positions
-                        if float(p.get('positionAmt', 0)) != 0
-                    }
+                    
+                    if self.spot_mode:
+                        # SPOT: Parse 'balances' -> positions
+                        positions = {}
+                        for b in data.get('balances', []):
+                            asset = b['asset']
+                            # Ignore specific assets if needed, or map to symbols
+                            total = float(b['free']) + float(b['locked'])
+                            if total > 0 and asset != 'USDT':
+                                # Approximation: assume matches symbol + USDT
+                                # Ideally we'd scan all symbols or filter relevant ones
+                                symbol = f"{asset}USDT"
+                                positions[symbol] = {
+                                    'symbol': symbol,
+                                    'positionAmt': total,
+                                    'entryPrice': 0.0 # Spot doesn't track this
+                                }
+                        return positions
+                    else:
+                        # FUTURES
+                        positions = data.get('positions', [])
+                        return {
+                            p['symbol']: p for p in positions
+                            if float(p.get('positionAmt', 0)) != 0
+                        }
                 else:
                     return {}
     
     async def _fetch_order_trades(self, symbol: str, client_order_id: str) -> List[dict]:
         """Fetch trades for a specific order."""
+        await self._rate_limiter.acquire()
         params = {
             "symbol": symbol,
             "timestamp": int(time.time() * 1000),
@@ -587,7 +671,10 @@ class ReconciliationService:
         params["signature"] = self._sign(params)
         
         headers = {"X-MBX-APIKEY": self.api_key}
-        url = f"{self.base_url}/fapi/v1/userTrades"
+        if self.spot_mode:
+             url = f"{self.base_url}/api/v3/myTrades" # different endpoint name for spot (myTrades)
+        else:
+             url = f"{self.base_url}/fapi/v1/userTrades"
         
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers, params=params) as response:
@@ -601,6 +688,7 @@ class ReconciliationService:
     
     async def _cancel_order_on_exchange(self, symbol: str, order_id: str) -> bool:
         """Cancel an order on the exchange."""
+        await self._rate_limiter.acquire()
         params = {
             "symbol": symbol,
             "orderId": order_id,
@@ -610,7 +698,10 @@ class ReconciliationService:
         params["signature"] = self._sign(params)
         
         headers = {"X-MBX-APIKEY": self.api_key}
-        url = f"{self.base_url}/fapi/v1/order"
+        if self.spot_mode:
+            url = f"{self.base_url}/api/v3/order"
+        else:
+            url = f"{self.base_url}/fapi/v1/order"
         
         async with aiohttp.ClientSession() as session:
             async with session.delete(url, headers=headers, params=params) as response:

@@ -28,6 +28,14 @@ class MockExchangeClient:
         self.current_prices = {} # symbol -> price
         self.balances = {'USDT': settings.INITIAL_CAPITAL}
         self.order_id_counter = 100000
+        
+        # Pre-populate positions for all tracked symbols
+        for s in settings.TRADING_SYMBOLS:
+            _ = self.positions[s.lower()] # Trigger defaultdict
+
+    async def futures_position_information(self, **kwargs):
+        """Simulate fetching position info (Alias for get_positions)."""
+        return await self.get_positions()
 
     # Alias for compatibility
     def create_order(self, **kwargs):
@@ -83,19 +91,19 @@ class MockExchangeClient:
         
         # LOGIC BRANCHING
         if order_type == 'MARKET':
-            # Fill immediately
-            asyncio.create_task(self._simulate_fill(exchange_id, fill_price, quantity))
+            # Fill immediately (await for synchronous processing in backtests)
+            await self._simulate_fill(exchange_id, fill_price, quantity)
         else:
             # LIMIT ORDER: Check if marketable immediately
             filled = False
             if current_market_price:
                 # Buy Limit >= Market Price -> Fill (Taker)
                 if side == 'BUY' and price >= current_market_price:
-                    asyncio.create_task(self._simulate_fill(exchange_id, price, quantity))
+                    await self._simulate_fill(exchange_id, price, quantity)
                     filled = True
                 # Sell Limit <= Market Price -> Fill (Taker)
                 elif side == 'SELL' and price <= current_market_price:
-                    asyncio.create_task(self._simulate_fill(exchange_id, price, quantity))
+                    await self._simulate_fill(exchange_id, price, quantity)
                     filled = True
             
             if not filled:
@@ -141,6 +149,11 @@ class MockExchangeClient:
             
         return {'status': 'CANCELED'} # Fallback
 
+    # Alias for OrderManager compatibility
+    async def cancel_order(self, **kwargs):
+        """Alias for futures_cancel_order."""
+        return await self.futures_cancel_order(**kwargs)
+
     async def get_positions(self) -> List[Dict]:
         """Return positions in Binance format."""
         pos_list = []
@@ -149,7 +162,7 @@ class MockExchangeClient:
                 'symbol': symbol.upper(),
                 'quantity': data['amount'],
                 'avgPrice': data['entryPrice'],
-                'unrealizedPnl': data['unrealizedPnl'],
+                'unRealizedProfit': data['unrealizedPnl'],
                 'positionAmt': data['amount'],
                 'entryPrice': data['entryPrice']
             })
@@ -179,21 +192,25 @@ class MockExchangeClient:
             
             should_fill = False
             
-            # Simple Matching Engine Logic
+            # IMPROVED Matching Engine Logic (More Aggressive for Paper Trading)
+            # Fill if price is AT or THROUGH the limit, OR within 0.5% (simulates queue priority)
+            # NOTE: 0.5% matches the typical spread width quoted by Avellaneda-Stoikov
+            tolerance = limit_price * 0.005  # 0.5% tolerance
+            
             if side == 'BUY':
-                # Price dropped below limit
-                if price <= limit_price:
+                # Price at or below limit (classic fill), OR very close (queue fill simulation)
+                if price <= limit_price + tolerance:
                     should_fill = True
             elif side == 'SELL':
-                # Price rose above limit
-                if price >= limit_price:
+                # Price at or above limit (classic fill), OR very close (queue fill simulation)
+                if price >= limit_price - tolerance:
                     should_fill = True
                     
             if should_fill:
                 # Remove from queue confirmed
                 self.active_orders[symbol].remove(oid)
-                # Fill at LIMIT price (Maker) - technically could be better but stick to limit
-                asyncio.create_task(self._simulate_fill(oid, limit_price, order['origQty']))
+                # Fill at LIMIT price (Maker) - await for synchronous processing
+                await self._simulate_fill(oid, limit_price, order['origQty'])
 
     async def _simulate_fill(self, exchange_order_id, price, quantity):
         """Helper to process a fill and update 'exchange' state."""
@@ -265,6 +282,24 @@ class MockExchangeClient:
             
         current_pos['amount'] = new_amt
         
+        # Update Balance with Realized PnL (Net of commission)
+        current_balance = self.balances.get('USDT', 0.0)
+        self.balances['USDT'] = current_balance + realized_pnl
+        
+        # Store fill in history
+        if not hasattr(self, 'fill_history'):
+            self.fill_history = []
+        
+        self.fill_history.append({
+            'timestamp': time.time(),
+            'symbol': symbol,
+            'side': side,
+            'quantity': quantity,
+            'price': price,
+            'commission': commission,
+            'pnl': realized_pnl
+        })
+        
         # Callback hook (to be set by Handler)
         if hasattr(self, 'on_fill_callback'):
             await self.on_fill_callback({
@@ -320,6 +355,11 @@ class MockExecutionHandler:
     async def execute(self, signal: SignalEvent):
         """Submit order via OrderManager."""
         try:
+            # Handle Cancellation Logic
+            if signal.side == 'CANCEL':
+                await self.order_manager.cancel_all_orders(signal.symbol)
+                return
+
             # Create order via OrderManager (handles Risk, DB, State)
             # Default fallback price if not found
             price = signal.price

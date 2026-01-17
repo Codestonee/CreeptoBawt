@@ -1,7 +1,7 @@
 import logging
 import os
 import asyncio
-import json
+
 import math
 from typing import Optional, Dict
 
@@ -41,6 +41,7 @@ class BinanceExecutionHandler:
         self.queue = event_queue
         self.risk_manager = risk_manager
         self.testnet = testnet
+        self.spot_mode = settings.SPOT_MODE  # NEW: Spot trading mode for EU users
         self.client: Optional[AsyncClient] = None
         self.bsm: Optional[BinanceSocketManager] = None
         
@@ -70,12 +71,16 @@ class BinanceExecutionHandler:
         # Deterministic Order Router for limit chasing
         self.order_router = DeterministicOrderRouter()
         
-        # API credentials
-        self.api_key = os.getenv("BINANCE_TESTNET_API_KEY")
-        self.api_secret = os.getenv("BINANCE_TESTNET_SECRET_KEY")
-        
+        # API credentials - USE SETTINGS MODULE (loads from .env via dotenv)
+        if self.testnet:
+            self.api_key = settings.BINANCE_TESTNET_API_KEY
+            self.api_secret = settings.BINANCE_TESTNET_SECRET_KEY
+        else:
+            self.api_key = settings.BINANCE_API_KEY
+            self.api_secret = settings.BINANCE_API_SECRET
+            
         if not self.api_key or not self.api_secret:
-            logger.critical("❌ MISSING API KEYS in .env file!")
+            logger.critical(f"❌ MISSING API KEYS in .env file! (Testnet={self.testnet})")
     
     async def connect(self):
         """Connect to Binance REST API and start user data stream."""
@@ -129,6 +134,24 @@ class BinanceExecutionHandler:
                 raise RuntimeError(error_msg)
                 
             await self.order_manager.initialize()
+            
+            # --- L4 MARGIN PROTECTION (CRITICAL) ---
+            # Skip for spot mode (no margin in spot trading)
+            if not self.spot_mode:
+                try:
+                    account_info = await self.client.futures_account()
+                    total_margin_balance = float(account_info.get('totalMarginBalance', 0))
+                    total_wallet_balance = float(account_info.get('totalWalletBalance', 0))
+                    
+                    if total_wallet_balance > 0:
+                        margin_utilization = 1 - (total_margin_balance / total_wallet_balance)
+                        self.risk_manager.circuit_breaker.update_margin_utilization(margin_utilization)
+                        self.risk_manager.circuit_breaker.update_equity(total_wallet_balance)
+                        logger.info(f"🛡️ Margin utilization: {margin_utilization*100:.1f}%")
+                except Exception as e:
+                    logger.warning(f"Could not check margin utilization: {e}")
+            else:
+                logger.info(f"💱 SPOT MODE enabled - no margin tracking")
             # -------------------------------
             
             # 2.1 Fetch Exchange Info (Dynamic Precision)
@@ -136,7 +159,7 @@ class BinanceExecutionHandler:
             
             # 3. Start User Data Stream
             self.bsm = BinanceSocketManager(self.client)
-            asyncio.create_task(self._user_data_stream())
+            self._user_stream_task = asyncio.create_task(self._user_data_stream())
             
             # 4. Log system start event
             await self.event_store.append(
@@ -153,7 +176,8 @@ class BinanceExecutionHandler:
             self.reconciliation = ReconciliationService(
                 api_key=self.api_key,
                 api_secret=self.api_secret,
-                testnet=self.testnet
+                testnet=self.testnet,
+                spot_mode=self.spot_mode
             )
             # Link new order manager to reconciliation if needed, or disable it
             # For now, we rely on PositionTracker for positions.
@@ -167,9 +191,34 @@ class BinanceExecutionHandler:
         """Listen for order updates from Binance user stream."""
         logger.info("🎧 Starting User Data Stream (Waiting for fills)...")
         
-        while True:
+        while self.client: # Check if client exists (proxy for running)
             try:
-                ts = self.bsm.futures_user_socket()
+                # 1. Get Listen Key explicitly (Raw Request to bypass Lib 404 bug)
+                if self.spot_mode:
+                    import aiohttp
+                    url = "https://api.binance.com/api/v3/userDataStream"
+                    headers = {"X-MBX-APIKEY": self.api_key}
+                    
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(url, headers=headers) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                listen_key = data['listenKey']
+                            else:
+                                text = await resp.text()
+                                logger.error(f"Raw Listen Key Failed: {resp.status} {text}")
+                                raise Exception(f"Could not get listen key: {resp.status}")
+                else:
+                    listen_key = await self.client.futures_stream_get_listen_key()
+                
+                logger.info(f"🔑 Listen Key obtained: {listen_key[:6]}...")
+                
+                # 2. Create Socket
+                ts = self.bsm.multiplex_socket([listen_key])
+                
+                # 3. Keep-alive task (30 mins)
+                # self.client.stream_keepalive(listen_key) - managed by lib or loop?
+                # We'll rely on reconnection for now or add a keepalive
                 
                 async with ts as tscm:
                     while True:
@@ -178,19 +227,34 @@ class BinanceExecutionHandler:
                         if res is None:
                             continue
                         
-                        # Forward to reconciliation for real-time validation
-                        if self.reconciliation and res.get('e') == 'ORDER_TRADE_UPDATE':
+                        # Handle Spot event
+                        if self.spot_mode:
+                            if res.get('e') == 'executionReport':
+                                await self._handle_order_update(res)
+                            elif res.get('e') == 'outboundAccountPosition':
+                                # Optional: Update positions from stream
+                                pass
+                        
+                        # Handle Futures event
+                        else:
+                            if res.get('e') == 'ORDER_TRADE_UPDATE':
+                                await self._handle_order_update(res['o'])
+                            
+                        # Forward to reconciliation
+                        if self.reconciliation:
+                            # Adapt event for reconciliation
                             await self.reconciliation.on_user_stream_event(res)
-                        
-                        if res.get('e') == 'ORDER_TRADE_UPDATE':
-                            await self._handle_order_update(res['o'])
-                        
+
             except asyncio.CancelledError:
                 logger.info("User Stream cancelled.")
                 break
             except Exception as e:
                 logger.error(f"User Stream Error: {e}")
                 await asyncio.sleep(5)
+    
+    # ... (skipping _handle_order_update) ...
+
+
     
     async def _handle_order_update(self, data: dict):
         """Process order update from exchange with OrderManager."""
@@ -348,7 +412,13 @@ class BinanceExecutionHandler:
         
         symbol = signal.symbol.upper()
         side = signal.side.upper()
-        is_spot = (getattr(signal, 'exchange', '') == 'binance_spot')
+        
+        # HANDLE CANCELLATION SIGNAL
+        if side == 'CANCEL':
+            await self.order_manager.cancel_all_orders(symbol.lower())
+            return None
+
+        is_spot = self.spot_mode  # Use global setting, not signal attribute
         
         tick_size, step_size = self._get_filters(symbol)
         
@@ -530,10 +600,10 @@ class BinanceExecutionHandler:
             except BinanceAPIException as e:
                 # MIN_NOTIONAL error - don't retry, it's a parameter issue
                 if e.code == -4164:
-                    logger.error(f"❌ MIN_NOTIONAL ERROR: {quantity} {symbol} = ${quantity * price:.2f} < $100")
+                    logger.error(f"❌ MIN_NOTIONAL ERROR: {quantity} {symbol} = ${quantity * price:.2f} < Minimum Notional")
                     await self.order_manager.mark_rejected(
                         order.client_order_id,
-                        error_message=f"MIN_NOTIONAL: ${quantity * price:.2f} < $100"
+                        error_message=f"MIN_NOTIONAL: ${quantity * price:.2f} too low"
                     )
                     return None
                 
@@ -570,7 +640,10 @@ class BinanceExecutionHandler:
     async def _fetch_exchange_info(self):
         """Fetch exchange filters (tickSize, stepSize) from API."""
         try:
-            info = await self.client.futures_exchange_info()
+            if self.spot_mode:
+                info = await self.client.get_exchange_info()
+            else:
+                info = await self.client.futures_exchange_info()
             for symbol_data in info['symbols']:
                 s = symbol_data['symbol']
                 
@@ -631,7 +704,10 @@ class BinanceExecutionHandler:
         """Get current best bid and ask prices from exchange."""
         try:
             # Use orderbook_ticker - faster than full order book
-            ticker = await self.client.futures_orderbook_ticker(symbol=symbol.upper())
+            if self.spot_mode:
+                ticker = await self.client.get_orderbook_ticker(symbol=symbol.upper())
+            else:
+                ticker = await self.client.futures_orderbook_ticker(symbol=symbol.upper())
             best_bid = float(ticker['bidPrice'])
             best_ask = float(ticker['askPrice'])
             return (best_bid, best_ask)
@@ -661,7 +737,6 @@ class BinanceExecutionHandler:
                     quantity=quantity,
                     recvWindow=self.nonce_service.get_recv_window()
                 )
-            else:
             else:  # LIMIT order
                 price = self._round_step_size(price, tick_size)
                 
@@ -762,6 +837,21 @@ class BinanceExecutionHandler:
         # Stop time sync
         await self.time_sync.stop()
         
+        # Stop User Stream
+        if hasattr(self, '_user_stream_task') and self._user_stream_task:
+            self._user_stream_task.cancel()
+            try:
+                await self._user_stream_task
+            except asyncio.CancelledError:
+                pass
+        
+        # Close Binance connection
+        if self.client:
+            await self.client.close_connection()
+            self.client = None # Clear client to stop loop
+        
+        logger.info("Execution handler closed.")
+        
         # Close Binance connection
         if self.client:
             await self.client.close_connection()
@@ -770,35 +860,58 @@ class BinanceExecutionHandler:
     
     async def _execute_spot_order(self, symbol, side, quantity, price, order_type, client_order_id):
         """Execute a REAL Spot order."""
+        # DEBUG: Log which key is being used
+        key_prefix = self.api_key[:6] if self.api_key else "NONE"
+        logger.info(f"🔑 Executing Spot Order check: KeyPrefix={key_prefix} Symbol={symbol}")
+
         if order_type == 'MARKET':
             return await self.client.create_order(
-                symbol=symbol,
+                symbol=symbol.upper(),
                 side=side,
                 type='MARKET',
                 quantity=quantity,
-                newClientOrderId=client_order_id,
-                recvWindow=self.nonce_service.get_recv_window()
+                newClientOrderId=client_order_id
             )
         else:
             return await self.client.create_order(
-                symbol=symbol,
+                symbol=symbol.upper(),
                 side=side,
                 type='LIMIT',
                 timeInForce='GTC',
                 quantity=quantity,
                 price=price,
-                newClientOrderId=client_order_id,
-                recvWindow=self.nonce_service.get_recv_window()
+                newClientOrderId=client_order_id
             )
 
-    async def _execute_futures_order(self, symbol, side, quantity, price, order_type, client_order_id):
-        """Execute a REAL Futures order."""
+
+    async def _execute_futures_order(self, symbol, side, quantity, price, order_type, client_order_id, stop_price: float = None):
+        """
+        Execute a REAL Futures order.
+        
+        Supports:
+        - MARKET: Immediate fill at best price
+        - LIMIT: Standard limit order
+        - STOP_MARKET: Stop-loss market order (triggers when stop_price is reached)
+        """
         if order_type == 'MARKET':
             return await self.client.futures_create_order(
                 symbol=symbol,
                 side=side,
                 type='MARKET',
                 quantity=quantity,
+                newClientOrderId=client_order_id,
+                recvWindow=self.nonce_service.get_recv_window()
+            )
+        elif order_type == 'STOP_MARKET':
+            # Stop-loss market order - triggers when price crosses stop_price
+            if not stop_price:
+                raise ValueError("STOP_MARKET requires stop_price parameter")
+            return await self.client.futures_create_order(
+                symbol=symbol,
+                side=side,
+                type='STOP_MARKET',
+                quantity=quantity,
+                stopPrice=str(stop_price),
                 newClientOrderId=client_order_id,
                 recvWindow=self.nonce_service.get_recv_window()
             )

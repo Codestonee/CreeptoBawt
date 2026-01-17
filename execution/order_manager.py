@@ -143,59 +143,7 @@ class OrderManager:
             logger.error(f"Failed to initialize OrderManager: {e}")
             raise
 
-    async def register_existing_order(
-        self,
-        client_order_id: str,
-        exchange_order_id: str,
-        symbol: str,
-        side: str,
-        quantity: float,
-        price: float,
-        order_type: str,
-        filled_quantity: float
-    ):
-        """
-        Register an existing order found on the exchange during startup.
-        This prevents 'orphan' orders (orders on exchange but invisible to bot).
-        """
-        try:
-            # Create Order object
-            order = Order(
-                client_order_id=client_order_id,
-                exchange_order_id=exchange_order_id,
-                symbol=symbol.lower(),
-                side=side.upper(),
-                quantity=quantity,
-                price=price,
-                order_type=order_type,
-                filled_quantity=filled_quantity,
-                state=OrderState.PARTIAL_FILL.value if filled_quantity > 0 else OrderState.SUBMITTED.value
-            )
-            order.created_at = time.time() # Approximation
-            order.updated_at = time.time()
-            
-            # Add to local cache
-            self._orders[client_order_id] = order
-            
-            # Upsert to DB to ensure consistency
-            await self.db.insert_order({
-                'client_order_id': order.client_order_id,
-                'trace_id': order.trace_id,
-                'symbol': order.symbol,
-                'side': order.side,
-                'order_type': order.order_type,
-                'time_in_force': order.time_in_force,
-                'quantity': order.quantity,
-                'price': order.price,
-                'state': order.state,
-                'created_at': order.created_at,
-                'updated_at': order.updated_at
-            })
-            
-            logger.info(f"Using existing order: {side} {quantity} {symbol} (Filled: {filled_quantity})")
-            
-        except Exception as e:
-            logger.error(f"Failed to register existing order {client_order_id}: {e}")
+
 
     async def get_position(self, symbol: str):
         """Get position from PositionTracker (Proxy)."""
@@ -623,9 +571,9 @@ class OrderManager:
                 logger.warning(f"Cancel failed: Order {client_order_id} not found")
                 return False
             
-            # Call exchange
+            # Call exchange (symbol must be UPPERCASE for Binance)
             await self.exchange.cancel_order(
-                symbol=order.symbol,
+                symbol=order.symbol.upper(),
                 orderId=order.exchange_order_id,
                 origClientOrderId=client_order_id
             )

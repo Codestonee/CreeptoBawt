@@ -1,0 +1,66 @@
+2026-01-15 14:40:06,534 - BacktestSimulator - INFO - ­ƒÜÇ Starting Backtest Simulation for BTCUSDT (240 mins)...
+2026-01-15 14:40:06,572 - Database - INFO - ­ƒÜÇ DB Background Worker started
+2026-01-15 14:40:06,577 - Core.EventStore - INFO - EventStore initialized with WAL mode at data/event_store.db
+2026-01-15 14:40:06,577 - Execution.OrderManager - INFO - OrderManager initialized
+2026-01-15 14:40:06,577 - Execution.Simulated - INFO - ­ƒº╗ Initializing PAPER TRADING environment...
+2026-01-15 14:40:06,577 - PositionTracker - INFO - ­ƒöä Initializing Position Tracker...
+2026-01-15 14:40:06,588 - PositionTracker - INFO - ­ƒôÜ Loaded 0 positions from database
+2026-01-15 14:40:06,588 - PositionTracker - INFO - ­ƒöä Force syncing positions with exchange...
+2026-01-15 14:40:06,588 - PositionTracker - ERROR - Force sync failed: 'MockExchangeClient' object has no attribute 'futures_position_information'
+Traceback (most recent call last):
+  File "C:\Users\Laptop-\Desktop\Claude\CreeptBaws\execution\position_tracker.py", line 108, in force_sync_with_exchange
+    raw_positions = await self.exchange.futures_position_information()
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'MockExchangeClient' object has no attribute 'futures_position_information'
+2026-01-15 14:40:06,590 - PositionTracker - CRITICAL - ÔØî FAILED TO SYNC POSITIONS - CANNOT START TRADING
+2026-01-15 14:40:06,590 - Execution.OrderManager - INFO - Initializing OrderManager...
+2026-01-15 14:40:06,590 - Execution.OrderManager - INFO - Ô£à OrderManager initialized (ready for bootstrapping)
+2026-01-15 14:40:06,590 - Execution.Simulated - INFO - Ô£à Paper Trading Ready
+2026-01-15 14:40:06,850 - Strategy.GLT - INFO - [BTCUSDT] Computed enhanced theta table with 20001 entries
+2026-01-15 14:40:06,851 - Strategy.GLT - INFO - [BTCUSDT] GLT params set: A=1.00, k=0.300, ╬│=0.300, base_spread=33316.7bps (theta_method=iterative)
+2026-01-15 14:40:06,851 - Strategy.AvellanedaStoikov - INFO - [BTCUSDT] GLT initialized with iterative theta
+2026-01-15 14:40:06,856 - Utils.StateManager - INFO - Loaded strategy state from data/strategy_state.json
+2026-01-15 14:40:06,856 - Analysis.VPIN - INFO - [BTCUSDT] VPINCalculator initialized: bucket=0.01, thresholds=0.5/0.8
+2026-01-15 14:40:06,857 - Strategy.AvellanedaStoikov - INFO - [btcusdt] Restoring state: Vol=1.449629356236932e-06, Kappa=0.02911306700224764
+2026-01-15 14:40:06,857 - BacktestSimulator - INFO - ÔÅ│ Processing 600 ticks...
+2026-01-15 14:40:06,857 - Strategy.AvellanedaStoikov - INFO - [btcusdt] Upgrading to iterative theta (warmup complete)
+2026-01-15 14:40:07,095 - Strategy.GLT - INFO - [BTCUSDT] Computed enhanced theta table with 20001 entries
+2026-01-15 14:40:07,095 - Strategy.AvellanedaStoikov - INFO - [BTCUSDT] VPIN: WARMUP (warming up)
+2026-01-15 14:40:07,095 - PositionTracker - ERROR - ÔØî Cannot get position - not synced with exchange
+2026-01-15 14:40:07,095 - PositionTracker - ERROR - ÔØî Cannot get position - not synced with exchange
+2026-01-15 14:40:07,095 - PositionTracker - ERROR - ÔØî Cannot get position - not synced with exchange
+2026-01-15 14:40:07,095 - Strategy.AvellanedaStoikov - INFO - ­ƒôè BTCUSDT: BID 0.01@$49,850.87 | ASK 0.01@$50,148.13
+2026-01-15 14:40:07,095 - PositionTracker - ERROR - ÔØî Cannot get position - not synced with exchange
+2026-01-15 14:40:07,095 - PositionTracker - WARNING - ÔÜá´©Å Getting exposure from unsynced positions
+2026-01-15 14:40:07,095 - PositionTracker - ERROR - ÔØî Cannot get position - not synced with exchange
+2026-01-15 14:40:07,096 - Execution.Simulated - INFO - ?? Order c_7fba918e80ed4222 QUEUED @ $49850.86512272727
+2026-01-15 14:40:07,096 - Execution.OrderManager - INFO - Ô£à Order submitted: BUY 0.01 btcusdt @ $49850.86512272727 [c_7fba918e80ed4222]
+2026-01-15 14:40:07,096 - Execution.OrderManager - WARNING - Order REJECTED by risk: Value $501.48 > Max $500.0 (FAT FINGER?)
+2026-01-15 14:40:07,123 - Utils.StateManager - INFO - Auto-save loop started
+Tick 0/600 | Price: 49999.50 | Eq: 500.00
+Tick 100/600 | Price: 50429.71 | Eq: 500.00
+Tick 200/600 | Price: 50429.91 | Eq: 500.00
+Tick 300/600 | Price: 50001.20 | Eq: 500.00
+Tick 400/600 | Price: 49567.19 | Eq: 500.00
+Tick 500/600 | Price: 49570.39 | Eq: 500.00
+
+Ô£à Simulation Complete.
+2026-01-15 14:40:07,124 - PositionTracker - INFO - ­ƒôè NEW POSITION: btcusdt 0.0100 @ $49850.8651
+2026-01-15 14:40:07,125 - Execution.OrderManager - INFO - Ô£à Fill processed: BUY 0.01 btcusdt @ $49850.86512272727 (PnL: $-0.1994)
+2026-01-15 14:40:07,126 - Execution.Simulated - INFO - ­ƒº╗ PAPER FILL: BUY 0.01 BTCUSDT @ 49850.86512272727 (PnL: -0.1994)
+Traceback (most recent call last):
+  File "C:\Users\Laptop-\Desktop\Claude\CreeptBaws\scripts\run_backtest_simulation.py", line 253, in <module>
+    asyncio.run(run_simulation())
+  File "C:\Program Files\Python311\Lib\asyncio\runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "C:\Program Files\Python311\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Program Files\Python311\Lib\asyncio\base_events.py", line 653, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "C:\Users\Laptop-\Desktop\Claude\CreeptBaws\scripts\run_backtest_simulation.py", line 207, in run_simulation
+    market_event = MarketEvent(SYMBOL, sim_time, price, 1.0)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: MarketEvent.__init__() takes 1 positional argument but 5 were given

@@ -1,476 +1,1975 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
+  <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>SERQET | Nexus Console</title>
-    <link href="obsidian.css?v=3" rel="stylesheet" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Orbitron:wght@400;500;700;900&family=Rajdhani:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link href="premium.css?v=1" rel="stylesheet" />
     <style>
-        /* Specific overrides for JS-injected content or dynamic states */
-        .status-pill { padding: 4px 12px; border-radius: 20px; font-size: 0.75rem; display: flex; align-items: center; gap: 6px; border: 1px solid currentColor; }
-        .status-pill--ok { color: var(--success); background: rgba(100,255,218,0.1); }
-        .status-pill--error { color: var(--danger); background: rgba(255,95,95,0.1); }
-        
-        .pnl--pos { color: var(--success); }
-        .pnl--neg { color: var(--danger); }
-        
-        /* Strategy Grid specific */
-        .strategy__grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
-        .strategy__tile { background: rgba(0,0,0,0.2); padding: 8px; border-radius: 4px; text-align: center; }
-        .strategy__tile-label { font-size: 0.65rem; color: var(--text-muted); display: block; }
-        .strategy__tile-value { font-family: 'JetBrains Mono', monospace; font-size: 0.9rem; color: var(--text-main); }
+      /* Specific overrides for JS-injected content or dynamic states */
+      .status-pill {
+        padding: 4px 12px;
+        border-radius: 20px;
+        font-size: 0.75rem;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        border: 1px solid currentColor;
+      }
+      .status-pill--ok {
+        color: var(--success);
+        background: rgba(100, 255, 218, 0.1);
+      }
+      .status-pill--error {
+        color: var(--danger);
+        background: rgba(255, 95, 95, 0.1);
+      }
 
-        /* Risk Bar */
-        .risk-bar { height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px; margin-top: 6px; overflow: hidden; }
-        .risk-fill { height: 100%; background: var(--success); transition: width 0.3s; }
-        .risk-fill.warning { background: var(--warning); }
-        .risk-fill.danger { background: var(--danger); }
+      .pnl--pos {
+        color: var(--success);
+      }
+      .pnl--neg {
+        color: var(--danger);
+      }
+
+      /* Strategy Grid specific */
+      .strategy__grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        margin-top: 8px;
+      }
+      .strategy__tile {
+        background: rgba(0, 0, 0, 0.2);
+        padding: 8px;
+        border-radius: 4px;
+        text-align: center;
+      }
+      .strategy__tile-label {
+        font-size: 0.65rem;
+        color: var(--text-muted);
+        display: block;
+      }
+      .strategy__tile-value {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 0.9rem;
+        color: var(--text-main);
+      }
+
+      /* Risk Bar */
+      .risk-bar {
+        height: 4px;
+        background: rgba(255, 255, 255, 0.1);
+        border-radius: 2px;
+        margin-top: 6px;
+        overflow: hidden;
+      }
+      .risk-fill {
+        height: 100%;
+        background: var(--success);
+        transition: width 0.3s;
+      }
+      .risk-fill.warning {
+        background: var(--warning);
+      }
+      .risk-fill.danger {
+        background: var(--danger);
+      }
     </style>
-</head>
-<body>
+  </head>
+  <body>
     <div class="app">
-        <!-- HEADER -->
-        <header class="header">
-            <div class="brand">
-                <svg class="brand__logo" viewBox="0 0 100 100">
-                    <path d="M50 20 L55 30 L65 30 L60 40 L65 50 L55 60 L50 80 L45 60 L35 50 L40 40 L35 30 L45 30 Z" fill="currentColor" />
-                </svg>
-                <div>
-                    <div class="brand__title">SERQET</div>
-                    <div class="brand__subtitle">NEXUS CONSOLE</div>
+      <!-- HEADER -->
+      <header class="header">
+        <div class="brand">
+          <svg class="brand__logo" viewBox="0 0 100 100">
+            <path
+              d="M50 20 L55 30 L65 30 L60 40 L65 50 L55 60 L50 80 L45 60 L35 50 L40 40 L35 30 L45 30 Z"
+              fill="currentColor"
+            />
+          </svg>
+          <div>
+            <div class="brand__title">SERQET</div>
+            <div class="brand__subtitle">NEXUS CONSOLE</div>
+          </div>
+        </div>
+
+        <div class="header__controls">
+          <div class="status-pill status-pill--ok" id="system-status">
+            <div class="status-dot active"></div>
+            ONLINE
+          </div>
+          <div id="rate-limit-meter" style="display:flex; align-items:center; gap:6px; font-size:0.7rem; padding:4px 10px; background:rgba(0,0,0,0.3); border-radius:4px">
+            <span style="opacity:0.6">API:</span>
+            <div style="width:60px; height:6px; background:rgba(255,255,255,0.1); border-radius:3px; overflow:hidden">
+              <div id="rate-limit-bar" style="width:0%; height:100%; background:var(--success); transition:width 0.3s"></div>
+            </div>
+            <span id="rate-limit-pct" style="width:35px">0%</span>
+          </div>
+          <div
+            style="font-family: 'JetBrains Mono'; font-size: 0.9rem"
+            id="clock"
+          >
+            00:00:00
+          </div>
+        </div>
+      </header>
+
+      <!-- MAIN LAYOUT -->
+      <div class="layout">
+        <!-- LEFT COLUMN (Controls & Stats) -->
+        <div class="col">
+          <div class="card">
+            <div class="card__header" style="margin-bottom:10px">
+              <div class="card__title">COMMAND</div>
+            </div>
+            <div style="display: flex; gap: 10px">
+              <button class="btn" style="flex: 1" onclick="sendAction('pause')">
+                ⏸ PAUSE
+              </button>
+              <button class="btn btn--danger" style="flex: 1" onclick="sendAction('flatten')">
+                🛑 FLATTEN
+              </button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card__header">
+              <div class="card__title">ACCOUNT</div>
+            </div>
+            <div class="kpi" style="margin-bottom: 12px">
+              <div class="kpi__label">NET LIQUIDITY</div>
+              <div class="kpi__value" id="net-liq">$0.00</div>
+            </div>
+            <div class="kpi-grid">
+              <div class="kpi">
+                <div class="kpi__label">REALIZED</div>
+                <div class="kpi__value" id="realized-pnl">$0.00</div>
+              </div>
+              <div class="kpi">
+                <div class="kpi__label">UNREALIZED</div>
+                <div class="kpi__value" id="unrealized-pnl">$0.00</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card__header">
+              <div class="card__title">PERFORMANCE</div>
+              <div style="display:flex; gap:2px; background:#111; padding:2px; border-radius:4px; border:1px solid #333">
+                <button id="perf-toggle-all" onclick="setPerfMode('all')" style="padding:2px 6px; font-size:0.65rem; border:none; background:rgba(201,162,39,0.2); color:#c9a227; border-radius:2px; cursor:pointer; font-weight:600">All</button>
+                <button id="perf-toggle-50" onclick="setPerfMode(50)" style="padding:2px 6px; font-size:0.65rem; border:none; background:transparent; color:#666; border-radius:2px; cursor:pointer">50</button>
+                <button id="perf-toggle-10" onclick="setPerfMode(10)" style="padding:2px 6px; font-size:0.65rem; border:none; background:transparent; color:#666; border-radius:2px; cursor:pointer">10</button>
+              </div>
+            </div>
+            <div class="kpi-grid" style="margin-bottom: 12px">
+              <div class="kpi">
+                <div class="kpi__label" data-tooltip="Percentage of trades that resulted in profit">WIN RATE</div>
+                <div class="kpi__value" id="win-rate">0%</div>
+              </div>
+              <div class="kpi">
+                <div class="kpi__label" data-tooltip="Total profitable trades vs losing trades">WINS / LOSSES</div>
+                <div class="kpi__value" id="wins-losses">0 / 0</div>
+              </div>
+            </div>
+            <div class="kpi-grid" style="margin-bottom: 12px">
+              <div class="kpi">
+                <div class="kpi__label" data-tooltip="Percentage of trades filled as maker (lower fees). Higher is better.">MAKER %</div>
+                <div class="kpi__value" id="maker-rate">0%</div>
+              </div>
+              <div class="kpi">
+                <div class="kpi__label" data-tooltip="Risk-adjusted return. Values above 1.0 are good, above 2.0 are excellent.">SHARPE RATIO</div>
+                <div class="kpi__value" id="sharpe-ratio">0.00</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card__header">
+              <div class="card__title">BEST / WORST</div>
+            </div>
+            <div class="kpi-grid">
+              <div class="kpi">
+                <div class="kpi__label">BEST TRADE</div>
+                <div class="kpi__value text-success" id="best-trade-pnl">$0.00</div>
+                <div style="font-size:0.8rem; opacity:0.7; margin-top:2px" id="best-trade-symbol">-</div>
+              </div>
+              <div class="kpi">
+                <div class="kpi__label">WORST TRADE</div>
+                <div class="kpi__value text-danger" id="worst-trade-pnl">$0.00</div>
+                <div style="font-size:0.8rem; opacity:0.7; margin-top:2px" id="worst-trade-symbol">-</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card__header">
+              <div class="card__title">FEES</div>
+            </div>
+            <div class="kpi-grid">
+              <div class="kpi">
+                <div class="kpi__label">TOTAL PAID</div>
+                <div class="kpi__value text-danger" id="total-fees">$0.00</div>
+              </div>
+              <div class="kpi">
+                <div class="kpi__label">MAKER/TAKER</div>
+                <div class="kpi__value" id="fee-ratio">$0 / $0</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card__header">
+              <div class="card__title">EXPOSURE</div>
+            </div>
+            <div style="margin-bottom:8px">
+              <div style="display:flex; justify-content:space-between; font-size:0.75rem; margin-bottom:4px">
+                <span>Capital Deployed</span>
+                <span id="exposure-pct">0%</span>
+              </div>
+              <div class="risk-bar" style="height:6px">
+                <div class="risk-fill" id="exposure-bar" style="width:0%"></div>
+              </div>
+            </div>
+            <div id="skew-warning" style="display:none; background:rgba(255,200,0,0.1); border:1px solid var(--warning); border-radius:4px; padding:6px; font-size:0.7rem; color:var(--warning)">
+              ⚠️ Inventory skew detected
+            </div>
+          </div>
+        </div>
+
+        <!-- CENTER COLUMN (Tabs & Charts) -->
+        <div class="col">
+          <div class="tabs">
+            <button
+              class="tabs__btn active"
+              id="btn-equity"
+              onclick="switchTab('equity')"
+            >
+              EQUITY
+            </button>
+            <button
+              class="tabs__btn"
+              id="btn-orders"
+              onclick="switchTab('orders')"
+            >
+              ORDERS
+            </button>
+            <button
+              class="tabs__btn"
+              id="btn-depth"
+              onclick="switchTab('depth')"
+            >
+              DEPTH
+            </button>
+            <button
+              class="tabs__btn"
+              id="btn-strategy"
+              onclick="switchTab('strategy')"
+            >
+              STRATEGY
+            </button>
+            <button class="tabs__btn" id="btn-risk" onclick="switchTab('risk')">
+              RISK
+            </button>
+            <button
+              class="tabs__btn"
+              id="btn-latency"
+              onclick="switchTab('latency')"
+            >
+              NETWORK
+            </button>
+            <button
+              class="tabs__btn"
+              id="btn-backtest"
+              onclick="switchTab('backtest')"
+            >
+              BACKTEST
+            </button>
+            <button
+              class="tabs__btn"
+              id="btn-config"
+              onclick="switchTab('config')"
+            >
+              CONFIG
+            </button>
+          </div>
+
+          <!-- VIEW: EQUITY -->
+          <div
+            id="view-equity"
+            style="
+              flex: 1;
+              display: flex;
+              flex-direction: column;
+              gap: 10px;
+              height: 100%;
+            "
+          >
+            <div class="card" style="height: 200px">
+              <div class="card__header" style="margin-bottom:8px">
+                <div style="display:flex; align-items:center; gap:10px">
+                  <div class="card__title">GROWTH CURVE</div>
+                  <span id="equity-pct-change" style="font-size:0.85rem; font-weight:600; padding:2px 8px; border-radius:4px; background:rgba(100,100,100,0.3); color:#888">-- %</span>
                 </div>
+                <div style="display:flex; gap:4px">
+                  <button onclick="setEquityRange('1h')" id="eq-1h" class="eq-range-btn active" style="background:rgba(201,162,39,0.2); border:1px solid #c9a227; color:#c9a227; padding:3px 8px; border-radius:4px; font-size:0.65rem; cursor:pointer">1H</button>
+                  <button onclick="setEquityRange('6h')" id="eq-6h" class="eq-range-btn" style="background:transparent; border:1px solid #444; color:#888; padding:3px 8px; border-radius:4px; font-size:0.65rem; cursor:pointer">6H</button>
+                  <button onclick="setEquityRange('24h')" id="eq-24h" class="eq-range-btn" style="background:transparent; border:1px solid #444; color:#888; padding:3px 8px; border-radius:4px; font-size:0.65rem; cursor:pointer">24H</button>
+                </div>
+              </div>
+              <div id="equity-chart" style="width: 100%; height: calc(100% - 40px); min-height: 120px"></div>
             </div>
             
-            <div class="header__controls">
-                <select id="symbol-filter" onchange="updateFilter(this.value)">
-                    <option value="ALL">ALL PAIRS</option>
-                </select>
-                <div class="status-pill status-pill--ok" id="system-status">
-                    <div class="status-dot active"></div> ONLINE
+            <div class="card" style="height: 200px">
+              <div class="card__header" style="margin-bottom:8px">
+                <div class="card__title">TRADING INSIGHTS</div>
+              </div>
+              
+              <!-- Daily Summary Row -->
+              <div style="display:grid; grid-template-columns:repeat(4, 1fr); gap:8px; margin-bottom:12px">
+                <div style="text-align:center; padding:8px; background:rgba(255,255,255,0.03); border-radius:6px">
+                  <div style="font-size:0.65rem; color:#888; margin-bottom:2px">TODAY'S TRADES</div>
+                  <div style="font-size:1rem; font-weight:600" id="daily-trades">0</div>
                 </div>
-                <div style="font-family:'JetBrains Mono'; font-size:0.9rem;" id="clock">00:00:00</div>
-            </div>
-        </header>
-
-        <!-- MAIN LAYOUT -->
-        <div class="layout">
-            <!-- LEFT COLUMN (Controls & Stats) -->
-            <div class="col">
-                <div class="card">
-                    <div class="card__header">
-                        <div class="card__title">COMMAND</div>
-                    </div>
-                    <div style="display:flex; gap:10px;">
-                        <button class="btn" style="flex:1" onclick="sendAction('pause')">⏸ PAUSE</button>
-                        <button class="btn btn--danger" style="flex:1" onclick="sendAction('flatten')">🛑 FLATTEN</button>
-                    </div>
+                <div style="text-align:center; padding:8px; background:rgba(255,255,255,0.03); border-radius:6px">
+                  <div style="font-size:0.65rem; color:#888; margin-bottom:2px">VOLUME</div>
+                  <div style="font-size:1rem; font-weight:600" id="daily-volume">$0</div>
                 </div>
-
-                <div class="card">
-                    <div class="card__header"><div class="card__title">ACCOUNT</div></div>
-                    <div class="kpi" style="margin-bottom:12px;">
-                        <div class="kpi__label">NET LIQUIDITY</div>
-                        <div class="kpi__value" id="net-liq">$0.00</div>
-                    </div>
-                    <div class="kpi-grid">
-                        <div class="kpi">
-                            <div class="kpi__label">REALIZED</div>
-                            <div class="kpi__value" id="realized-pnl">$0.00</div>
-                        </div>
-                        <div class="kpi">
-                            <div class="kpi__label">UNREALIZED</div>
-                            <div class="kpi__value" id="unrealized-pnl">$0.00</div>
-                        </div>
-                    </div>
+                <div style="text-align:center; padding:8px; background:rgba(255,255,255,0.03); border-radius:6px">
+                  <div style="font-size:0.65rem; color:#888; margin-bottom:2px">AVG PROFIT</div>
+                  <div style="font-size:1rem; font-weight:600" id="avg-profit">$0</div>
                 </div>
-
-                <div class="card">
-                    <div class="card__header"><div class="card__title">PERFORMANCE</div></div>
-                    <div class="kpi-grid" style="margin-bottom:12px;">
-                        <div class="kpi">
-                            <div class="kpi__label">WIN RATE</div>
-                            <div class="kpi__value" id="win-rate">0%</div>
-                        </div>
-                        <div class="kpi">
-                            <div class="kpi__label">MAKER %</div>
-                            <div class="kpi__value" id="maker-rate">0%</div>
-                        </div>
-                    </div>
-                    <div class="kpi">
-                         <div class="kpi__label">SHARPE RATIO</div>
-                         <div class="kpi__value" id="sharpe-ratio">0.00</div>
-                    </div>
+                <div style="text-align:center; padding:8px; background:rgba(255,255,255,0.03); border-radius:6px">
+                  <div style="font-size:0.65rem; color:#888; margin-bottom:2px">BEST SYMBOL</div>
+                  <div style="font-size:0.9rem; font-weight:600" id="best-symbol">-</div>
                 </div>
+              </div>
+              
+              <!-- Profit Heatmap -->
+              <div style="display:flex; align-items:center; gap:4px; margin-bottom:4px">
+                <div style="font-size:0.65rem; color:#888">SYMBOL PROFIT HEATMAP</div>
+                <span data-tooltip="Shows PnL based on currently loaded trades history (Session PnL). May differ from Total Realized PnL which tracks all-time account performance." style="cursor:help; font-size:0.8rem">ℹ️</span>
+              </div>
+              <div id="profit-heatmap" style="display:flex; gap:4px; flex-wrap:wrap">
+                <div style="padding:6px 10px; border-radius:4px; background:rgba(100,100,100,0.2); font-size:0.75rem; color:#888">Loading...</div>
+              </div>
             </div>
 
-            <!-- CENTER COLUMN (Tabs & Charts) -->
-            <div class="col">
-                <div class="tabs">
-                    <button class="tabs__btn active" id="btn-equity" onclick="switchTab('equity')">EQUITY</button>
-                    <button class="tabs__btn" id="btn-strategy" onclick="switchTab('strategy')">STRATEGY</button>
-                    <button class="tabs__btn" id="btn-risk" onclick="switchTab('risk')">RISK</button>
-                    <button class="tabs__btn" id="btn-latency" onclick="switchTab('latency')">NETWORK</button>
-                    <button class="tabs__btn" id="btn-config" onclick="switchTab('config')">CONFIG</button>
+            <div class="card card--tall">
+              <div class="card__header">
+                <div class="card__title">POSITIONS</div>
+              </div>
+              <div id="positions-list" class="list">
+                <div
+                  style="
+                    text-align: center;
+                    padding: 20px;
+                    color: var(--text-dim);
+                  "
+                >
+                  Waiting for data...
                 </div>
-
-                <!-- VIEW: EQUITY -->
-                <div id="view-equity" style="flex:1; display:flex; flex-direction:column; gap:20px; height:100%;">
-                    <div class="card" style="height:320px;">
-                        <div class="card__header"><div class="card__title">GROWTH CURVE</div></div>
-                        <div id="equity-chart" style="width:100%; height:100%;"></div>
-                    </div>
-                    
-                    <div class="card card--tall">
-                        <div class="card__header"><div class="card__title">POSITIONS</div></div>
-                        <div id="positions-list" class="list">
-                            <div style="text-align:center; padding:20px; color:var(--text-dim)">Waiting for data...</div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- OTHER VIEWS (Hidden) -->
-                <div id="view-strategy" style="display:none; height:100%;">
-                    <div class="card card--tall">
-                        <div class="card__header"><div class="card__title">STRATEGY STATE</div></div>
-                        <div id="strategy-content" class="list"></div>
-                    </div>
-                </div>
-
-                <div id="view-risk" style="display:none; height:100%;">
-                     <div class="card card--tall">
-                        <div class="card__header"><div class="card__title">RISK EXPOSURE</div></div>
-                        <div id="risk-content" class="list"></div>
-                    </div>
-                </div>
-
-                <div id="view-latency" style="display:none; height:100%;">
-                     <div class="card card--tall">
-                        <div class="card__header"><div class="card__title">SYSTEM HEALTH</div></div>
-                        <div id="latency-content" class="list"></div>
-                    </div>
-                </div>
-
-                <div id="view-config" style="display:none; height:100%;">
-                     <div class="card card--tall">
-                        <div class="card__header">
-                            <div class="card__title">ALGO PARAMETERS</div>
-                            <button class="btn" onclick="saveConfig()">💾 SAVE CHANGES</button>
-                        </div>
-                        <div id="config-form" class="list" style="padding:10px;">
-                            <!-- Form generated by JS -->
-                            <div style="text-align:center; padding:20px; color:var(--text-dim)">Loading config...</div>
-                        </div>
-                    </div>
-                </div>
+              </div>
             </div>
+          </div>
 
-            <!-- RIGHT COLUMN (Feed & Logs) -->
-            <div class="col">
-                <div class="card card--tall">
-                    <div class="card__header"><div class="card__title">LIVE FEED</div></div>
-                    <div id="trades-list" class="list">
-                         <div style="text-align:center; padding:20px; color:var(--text-dim)">Waiting...</div>
-                    </div>
+          <!-- OTHER VIEWS (Hidden) -->
+          <!-- VIEW: ORDERS (Priority 1.2 + 1.3 + 2.1) -->
+          <div id="view-orders" style="display: none; height: 100%">
+            <div class="card" style="margin-bottom: 10px">
+              <div class="card__header">
+                <div class="card__title">OPEN ORDERS</div>
+                <button class="btn btn--danger" onclick="cancelAllOrders()" style="font-size: 0.7rem">
+                  ❌ CANCEL ALL
+                </button>
+              </div>
+              <div id="open-orders-list" class="list" style="max-height: 200px; overflow-y: auto">
+                <div style="text-align: center; padding: 20px; color: var(--text-dim)">
+                  Loading orders...
                 </div>
-
-                <div class="card" style="height: 250px;">
-                    <div class="card__header"><div class="card__title">SYSTEM LOG</div></div>
-                    <div id="log-list" class="log-panel">
-                        <div class="log-line"><span>System initializing...</span></div>
-                    </div>
-                </div>
+              </div>
             </div>
+            <div class="card">
+              <div class="card__header">
+                <div class="card__title">DECISION LOG</div>
+              </div>
+              <div id="decision-log" class="list" style="max-height: 250px; overflow-y: auto">
+                <div style="text-align: center; padding: 20px; color: var(--text-dim)">
+                  Loading decisions...
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- VIEW: DEPTH (Order Book) -->
+          <div id="view-depth" style="display: none; height: 100%">
+            <div class="card card--tall">
+              <div class="card__header">
+                <div class="card__title">ORDER BOOK DEPTH</div>
+                <div style="display:flex; gap:10px; align-items:center">
+                  <select id="depth-symbol" onchange="loadOrderBook(this.value)" style="background:#111; border:1px solid #333; color:#fff; padding:4px 8px; border-radius:4px; font-size:0.7rem">
+                    <option value="btcusdt">BTCUSDT</option>
+                    <option value="ethusdt">ETHUSDT</option>
+                    <option value="solusdt">SOLUSDT</option>
+                  </select>
+                  <span id="spread-display" style="font-size:0.75rem; color:var(--warning)">Spread: --</span>
+                </div>
+              </div>
+              <div style="display:flex; gap:10px; height:calc(100% - 50px)">
+                <!-- Bids (Green) -->
+                <div style="flex:1; display:flex; flex-direction:column">
+                  <div style="font-size:0.7rem; color:var(--success); text-align:center; margin-bottom:5px">BIDS</div>
+                  <div id="depth-bids" style="flex:1; display:flex; flex-direction:column; gap:2px; overflow:hidden"></div>
+                </div>
+                <!-- Asks (Red) -->
+                <div style="flex:1; display:flex; flex-direction:column">
+                  <div style="font-size:0.7rem; color:var(--danger); text-align:center; margin-bottom:5px">ASKS</div>
+                  <div id="depth-asks" style="flex:1; display:flex; flex-direction:column; gap:2px; overflow:hidden"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div id="view-strategy" style="display: none; height: 100%">
+            <div class="card card--tall">
+              <div class="card__header">
+                <div class="card__title">STRATEGY STATE</div>
+                <span onclick="toggleHelp('strategy-help')" style="cursor:pointer; font-size:1.1rem" title="Show/Hide Help">ℹ️</span>
+              </div>
+              <div id="strategy-help" style="display:none; margin-bottom:15px; padding:12px; background:rgba(201,162,39,0.08); border:1px solid rgba(201,162,39,0.3); border-radius:8px; font-size:0.75rem; line-height:1.5">
+                <div style="font-weight:600; color:#c9a227; margin-bottom:8px">📖 STRATEGY GUIDE</div>
+                Shows real-time calculated values for the Avellaneda-Stoikov strategy.
+                <ul style="margin:5px 0 0 15px; padding:0">
+                  <li><b>Reference Price:</b> Mid-market price used as a baseline.</li>
+                  <li><b>Reservation Price:</b> Adjusted price based on inventory skew.</li>
+                  <li><b>Spread:</b> Calculated bid/ask spread based on volatility (Gamma).</li>
+                </ul>
+              </div>
+              <div id="strategy-content" class="list"></div>
+            </div>
+          </div>
+
+          <div id="view-risk" style="display: none; height: 100%">
+            <div class="card card--tall">
+              <div class="card__header">
+                <div class="card__title">RISK EXPOSURE</div>
+                <span onclick="toggleHelp('risk-help')" style="cursor:pointer; font-size:1.1rem" title="Show/Hide Help">ℹ️</span>
+              </div>
+              <div id="risk-help" style="display:none; margin-bottom:15px; padding:12px; background:rgba(201,162,39,0.08); border:1px solid rgba(201,162,39,0.3); border-radius:8px; font-size:0.75rem; line-height:1.5">
+                <div style="font-weight:600; color:#c9a227; margin-bottom:8px">📖 RISK GUIDE</div>
+                Monitors current exposure against configured limits.
+                <ul style="margin:5px 0 0 15px; padding:0">
+                  <li><b>Inventory:</b> Current holdings per symbol.</li>
+                  <li><b>Notional Value:</b> Dollar value of current position.</li>
+                  <li><b>Utilization:</b> % of max allowed position used.</li>
+                </ul>
+              </div>
+              <div id="risk-content" class="list"></div>
+            </div>
+          </div>
+
+          <div id="view-latency" style="display: none; height: 100%">
+            <div class="card" style="margin-bottom: 10px">
+              <div class="card__header">
+                <div class="card__title">LATENCY METRICS</div>
+                <span onclick="toggleHelp('network-help')" style="cursor:pointer; font-size:1.1rem" title="Show/Hide Help">ℹ️</span>
+              </div>
+              <div id="network-help" style="display:none; margin-bottom:15px; padding:12px; background:rgba(201,162,39,0.08); border:1px solid rgba(201,162,39,0.3); border-radius:8px; font-size:0.75rem; line-height:1.5">
+                <div style="font-weight:600; color:#c9a227; margin-bottom:8px">📖 NETWORK GUIDE</div>
+                Tracks round-trip time (RTT) to exchange APIs.
+                <ul style="margin:5px 0 0 15px; padding:0">
+                  <li><b>AVG:</b> Average latency over last minute.</li>
+                  <li><b>P99:</b> Worst-case latency (99th percentile).</li>
+                  <li><b>Health:</b> Overall system connectivity status.</li>
+                </ul>
+              </div>
+              <div class="kpi-grid" style="margin-bottom: 12px">
+                <div class="kpi">
+                  <div class="kpi__label">AVG</div>
+                  <div class="kpi__value" id="latency-avg">0ms</div>
+                </div>
+                <div class="kpi">
+                  <div class="kpi__label">P99</div>
+                  <div class="kpi__value" id="latency-p99">0ms</div>
+                </div>
+                <div class="kpi">
+                  <div class="kpi__label">MAX</div>
+                  <div class="kpi__value" id="latency-max">0ms</div>
+                </div>
+              </div>
+              <div id="latency-sparkline" style="height: 60px; display: flex; align-items: flex-end; gap: 2px; padding: 5px">
+                <!-- Sparkline bars rendered by JS -->
+              </div>
+            </div>
+            <div class="card">
+              <div class="card__header">
+                <div class="card__title">SYSTEM HEALTH</div>
+              </div>
+              <div id="latency-content" class="list"></div>
+            </div>
+          </div>
+
+          <!-- VIEW: BACKTEST -->
+          <div id="view-backtest" style="display: none; height: 100%">
+            <div class="card" style="margin-bottom: 10px">
+              <div class="card__header">
+                <div class="card__title">STRATEGY BACKTEST</div>
+                <div style="display:flex; align-items:center; gap:8px">
+                  <button class="btn" id="run-backtest-btn" onclick="runBacktest()">▶️ RUN SIMULATION</button>
+                  <span onclick="toggleHelp('backtest-help')" style="cursor:pointer; font-size:1.1rem" title="Show/Hide Help">ℹ️</span>
+                </div>
+              </div>
+              <div id="backtest-help" style="display:none; margin-bottom:15px; padding:12px; background:rgba(201,162,39,0.08); border:1px solid rgba(201,162,39,0.3); border-radius:8px; font-size:0.75rem; line-height:1.5">
+                <div style="font-weight:600; color:#c9a227; margin-bottom:8px">📖 BACKTEST GUIDE</div>
+                Simulate strategy performance using historical data.
+                <ul style="margin:5px 0 0 15px; padding:0">
+                  <li>Select <b>Symbol</b> and <b>Duration</b>.</li>
+                  <li>Click <b>Run Simulation</b> to test current Config parameters.</li>
+                  <li>View detailed report in Results panel.</li>
+                </ul>
+              </div>
+              <div style="padding:15px">
+                <div style="display:flex; gap:15px; margin-bottom:15px">
+                  <div>
+                    <label style="font-size:0.7rem; opacity:0.6">Symbol</label>
+                    <select id="bt-symbol" style="display:block; background:#111; border:1px solid #333; color:#fff; padding:6px; border-radius:4px; margin-top:4px">
+                      <option value="BTCUSDT">BTCUSDT</option>
+                      <option value="ETHUSDT">ETHUSDT</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label style="font-size:0.7rem; opacity:0.6">Duration</label>
+                    <select id="bt-duration" style="display:block; background:#111; border:1px solid #333; color:#fff; padding:6px; border-radius:4px; margin-top:4px">
+                      <option value="60">1 Hour</option>
+                      <option value="240" selected>4 Hours</option>
+                      <option value="1440">24 Hours</option>
+                    </select>
+                  </div>
+                </div>
+                <div style="margin-bottom:10px">
+                  <div style="display:flex; justify-content:space-between; font-size:0.75rem; margin-bottom:4px">
+                    <span id="bt-status">Ready</span>
+                    <span id="bt-progress-pct">0%</span>
+                  </div>
+                  <div class="risk-bar" style="height:8px">
+                    <div class="risk-fill" id="bt-progress-bar" style="width:0%"></div>
+                  </div>
+                </div>
+                <div id="bt-output" style="background:#000; padding:10px; border-radius:4px; height:80px; overflow-y:auto; font-family:'JetBrains Mono'; font-size:0.65rem; color:var(--text-dim)">
+                  Click RUN to start simulation...
+                </div>
+              </div>
+            </div>
+            <div class="card card--tall">
+              <div class="card__header">
+                <div class="card__title">RESULTS</div>
+                <a id="bt-report-link" href="/api/backtest/report" target="_blank" style="display:none; font-size:0.7rem; color:var(--primary)">📄 Open Full Report</a>
+              </div>
+              <iframe id="bt-report-frame" src="about:blank" style="width:100%; height:calc(100% - 40px); border:none; background:#111"></iframe>
+            </div>
+          </div>
+
+          <div id="view-config" style="display: none; height: 100%">
+            <div class="card card--tall">
+              <div class="card__header">
+                <div class="card__title">ALGO PARAMETERS</div>
+                <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap">
+                  <button class="btn" onclick="applyPreset('low')" style="font-size:0.6rem; padding:5px 8px; background:rgba(0,230,118,0.1); border-color:rgba(0,230,118,0.3)">🛡️ LOW</button>
+                  <button class="btn" onclick="applyPreset('recommended')" style="font-size:0.6rem; padding:5px 8px; background:rgba(201,162,39,0.15); border-color:rgba(201,162,39,0.4)">⭐ BALANCED</button>
+                  <button class="btn" onclick="applyPreset('high')" style="font-size:0.6rem; padding:5px 8px; background:rgba(255,71,87,0.1); border-color:rgba(255,71,87,0.3)">🔥 HIGH</button>
+                  <button class="btn" onclick="applyPreset('scalper')" style="font-size:0.6rem; padding:5px 8px; background:rgba(0,191,255,0.15); border-color:rgba(0,191,255,0.4); color:#00bfff" title="Tight spreads, high volume, quick in/out">⚡ SCALPER</button>
+                  <button class="btn" onclick="applyPreset('swing')" style="font-size:0.6rem; padding:5px 8px; background:rgba(255,165,0,0.15); border-color:rgba(255,165,0,0.4); color:#ffa500" title="Wide spreads, hold longer, bigger wins">🌊 SWING</button>
+                  <button class="btn" onclick="applyPreset('degen')" style="font-size:0.6rem; padding:5px 8px; background:rgba(138,43,226,0.15); border-color:rgba(138,43,226,0.5); color:#da70d6">💀 DEGEN</button>
+                  <button class="btn" onclick="saveConfig()" style="font-size:0.6rem; padding:5px 8px">💾 SAVE</button>
+                  <span onclick="toggleHelp('config-help')" style="cursor:pointer; font-size:1.1rem; margin-left:4px" title="Show/Hide Help">ℹ️</span>
+                </div>
+              </div>
+              
+              <!-- Help Info Panel -->
+              <div id="config-help" style="display:none; margin-bottom:15px; padding:12px; background:rgba(201,162,39,0.08); border:1px solid rgba(201,162,39,0.3); border-radius:8px; font-size:0.75rem; line-height:1.5">
+                <div style="font-weight:600; color:#c9a227; margin-bottom:8px">📖 PARAMETER GUIDE</div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px">
+                  <div><b style="color:#00e676">Risk Aversion (Gamma)</b><br>Higher = wider spreads, safer but less trades. Range: 0.5-5.0</div>
+                  <div><b style="color:#00e676">Inventory Aversion (Kappa)</b><br>Higher = faster inventory reduction. Range: 0.5-5.0</div>
+                  <div><b style="color:#00e676">Max Position ($)</b><br>Maximum position value per symbol in USD.</div>
+                  <div><b style="color:#00e676">Max Total Exposure ($)</b><br>Maximum total portfolio exposure in USD.</div>
+                  <div><b style="color:#00e676">Min Profit (BPS)</b><br>Minimum profit target in basis points per trade.</div>
+                  <div><b style="color:#00e676">Maker Fee (BPS)</b><br>Exchange maker fee in basis points.</div>
+                </div>
+                <div style="margin-top:10px; padding-top:10px; border-top:1px solid rgba(255,255,255,0.1)">
+                  <b>📊 What is BPS?</b> Basis Points (BPS) = 1/100th of a percent. So 10 BPS = 0.10%, 100 BPS = 1.00%
+                </div>
+                <div style="margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.1)">
+                  <b>Presets:</b> 🛡️ LOW = Safe/Slow | ⭐ RECOMMENDED = Balanced | 🔥 HIGH = Aggressive/Fast
+                </div>
+              </div>
+              
+              <div id="config-form" class="list" style="padding: 10px">
+                <!-- Form generated by JS -->
+                <div
+                  style="
+                    text-align: center;
+                    padding: 20px;
+                    color: var(--text-dim);
+                  "
+                >
+                  Loading config...
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
+
+        <!-- RIGHT COLUMN (Feed & Logs) -->
+        <div class="col">
+          <div class="card card--tall">
+            <div class="card__header">
+              <div class="card__title">LIVE FEED</div>
+              <div style="display:flex; gap:6px">
+                <select id="symbol-filter" onchange="updateFilter(this.value)" style="background:#111; border:1px solid #333; color:#fff; padding:4px 8px; border-radius:4px; font-size:0.65rem">
+                  <option value="ALL">ALL PAIRS</option>
+                </select>
+                <select id="trades-sort" onchange="renderTrades()" style="background:#111; border:1px solid #333; color:#fff; padding:4px 8px; border-radius:4px; font-size:0.65rem">
+                  <option value="latest">Latest</option>
+                  <option value="best">Best PnL</option>
+                  <option value="worst">Worst PnL</option>
+                </select>
+              </div>
+            </div>
+            <div id="trades-list" class="list">
+              <div
+                style="
+                  text-align: center;
+                  padding: 20px;
+                  color: var(--text-dim);
+                "
+              >
+                Waiting...
+              </div>
+            </div>
+          </div>
+
+          <div class="card" style="height: 200px">
+            <div class="card__header">
+              <div class="card__title">PRICE CHART</div>
+              <select id="price-chart-symbol" onchange="loadPriceChart(this.value)" style="background:#111; border:1px solid #333; color:#fff; padding:4px 8px; border-radius:4px; font-size:0.7rem">
+                <option value="btcusdt">BTCUSDT</option>
+                <option value="ethusdt">ETHUSDT</option>
+                <option value="solusdt">SOLUSDT</option>
+                <option value="bnbusdt">BNBUSDT</option>
+                <option value="xrpusdt">XRPUSDT</option>
+              </select>
+            </div>
+            <div id="price-chart" style="width: 100%; height: calc(100% - 40px)"></div>
+          </div>
+        </div>
+      </div>
     </div>
 
-    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
     <script>
-        // --- TRADINGVIEW CHART SETUP ---
-        const chartContainer = document.getElementById('equity-chart');
-        const chart = LightweightCharts.createChart(chartContainer, {
-            layout: { 
-                background: { type: 'solid', color: 'transparent' }, 
-                textColor: '#52525b',
-                fontFamily: 'JetBrains Mono'
+      // --- TRADINGVIEW CHART SETUP ---
+      const chartContainer = document.getElementById("equity-chart");
+      let chart, areaSeries;
+
+      try {
+        if (typeof LightweightCharts === "undefined") {
+          throw new Error("LightweightCharts lib not loaded");
+        }
+
+        chart = LightweightCharts.createChart(chartContainer, {
+          layout: {
+            background: { type: "solid", color: "transparent" },
+            textColor: "#999999",
+            fontFamily: "JetBrains Mono",
+          },
+          grid: {
+            vertLines: { color: "rgba(42, 42, 42, 0)" },
+            horzLines: { color: "rgba(42, 42, 42, 0.5)", style: 3 },
+          },
+          leftPriceScale: {
+            visible: true,
+            borderColor: "rgba(255, 255, 255, 0.2)",
+          },
+          rightPriceScale: { visible: false },
+          timeScale: {
+            borderColor: "rgba(255, 255, 255, 0.2)",
+            timeVisible: true,
+            secondsVisible: false,
+            tickMarkFormatter: (time) => {
+              const date = new Date(time * 1000);
+              return date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
             },
-            grid: {
-                vertLines: { color: 'rgba(42, 42, 42, 0)' },
-                horzLines: { color: 'rgba(42, 42, 42, 0.5)', style: 3 }
-            },
-            rightPriceScale: {
-                borderColor: 'rgba(255, 255, 255, 0.1)',
-            },
-            timeScale: {
-                borderColor: 'rgba(255, 255, 255, 0.1)',
-                timeVisible: true,
-                secondsVisible: false,
-            },
-            crosshair: {
-                mode: LightweightCharts.CrosshairMode.Normal,
-            },
+          },
+          crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
         });
 
-        const areaSeries = chart.addAreaSeries({
-            lineColor: '#ffffff',
-            topColor: 'rgba(255, 255, 255, 0.1)',
-            bottomColor: 'rgba(255, 255, 255, 0.0)',
-            lineWidth: 2,
+        areaSeries = chart.addAreaSeries({
+          lineColor: "#c0c0c0",
+          topColor: "rgba(192, 192, 192, 0.15)",
+          bottomColor: "rgba(192, 192, 192, 0.0)",
+          lineWidth: 2,
+          priceScaleId: 'left',
+          lastValueVisible: false,
+          priceLineVisible: false,
         });
 
         // Resize handler
-        window.addEventListener('resize', () => {
-            chart.applyOptions({ width: chartContainer.clientWidth, height: chartContainer.clientHeight });
+        window.addEventListener("resize", () => {
+          if (chart)
+            chart.applyOptions({
+              width: chartContainer.clientWidth,
+              height: chartContainer.clientHeight,
+            });
+          if (priceChart) {
+            const priceContainer = document.getElementById("price-chart");
+            priceChart.applyOptions({
+              width: priceContainer.clientWidth,
+              height: priceContainer.clientHeight,
+            });
+          }
         });
 
-        // --- DASHBOARD LOGIC ---
-        let socket;
-        let currentFilter = 'ALL';
-        
-        setInterval(() => {
-            document.getElementById('clock').innerText = new Date().toLocaleTimeString();
-        }, 1000);
+        console.log("✅ Chart initialized");
+      } catch (e) {
+        console.error("❌ Chart init failed:", e);
+        document.getElementById(
+          "equity-chart"
+        ).innerHTML = `<div style="color:red; padding:20px;">Chart Error: ${e.message}</div>`;
+      }
 
-        function updateFilter(val) { currentFilter = val; }
-        
-        async function sendAction(action) {
-             if (action === 'flatten' && !confirm("⚠️ CONFIRM FLATTEN?")) return;
-             await fetch(`/api/action/${action}`, { method: 'POST' });
-        }
+      // --- EQUITY HISTORY FETCH ---
+      async function loadEquityHistory() {
+          try {
+              const res = await fetch("/api/equity_history");
+              if (!res.ok) throw new Error("Failed to fetch equity");
+              const data = await res.json();
+              
+              fullEquityData = data || []; // Store globally
+              updateEquityChart();   // Render (handles empty state)
+          } catch (e) {
+              console.error("Equity load error:", e);
+          }
+      }
+      
+      // Polling
+      setInterval(loadEquityHistory, 5000);
+      setTimeout(loadEquityHistory, 100); // Initial load
+      setInterval(loadLatencyData, 2000); // 2s poll for latency
+      
+       // --- PRICE CHART SETUP ---
+      let priceChart, candleSeries, markers = [];
 
-        async function switchTab(name) {
-            ['equity', 'strategy', 'risk', 'latency', 'config'].forEach(t => {
-                document.getElementById('view-' + t).style.display = t === name ? (t === 'equity' ? 'flex' : 'block') : 'none';
-                document.getElementById('btn-' + t).className = t === name ? 'tabs__btn active' : 'tabs__btn';
-            });
-            window.dispatchEvent(new Event('resize'));
+      // ... existing code ...
+      
+      function initPriceChart() {
+        const priceContainer = document.getElementById("price-chart");
+        if (!priceContainer || typeof LightweightCharts === "undefined") return;
+        
+        priceChart = LightweightCharts.createChart(priceContainer, {
+          layout: {
+            background: { type: "solid", color: "transparent" },
+            textColor: "#52525b",
+            fontFamily: "JetBrains Mono",
+          },
+          grid: {
+            vertLines: { color: "rgba(42, 42, 42, 0)" },
+            horzLines: { color: "rgba(42, 42, 42, 0.5)", style: 3 },
+          },
+          rightPriceScale: { borderColor: "rgba(255, 255, 255, 0.1)" },
+          timeScale: { borderColor: "rgba(255, 255, 255, 0.1)", timeVisible: true },
+        });
+        
+        candleSeries = priceChart.addCandlestickSeries({
+          upColor: "#64ffda",
+          downColor: "#ff5f5f",
+          borderUpColor: "#64ffda",
+          borderDownColor: "#ff5f5f",
+          wickUpColor: "#64ffda",
+          wickDownColor: "#ff5f5f",
+        });
+        
+        // Load initial chart
+        loadPriceChart("btcusdt");
+      }
+      
+      async function loadPriceChart(symbol) {
+        if (!candleSeries) return;
+        
+        try {
+          const res = await fetch(`/api/candles/${symbol}`);
+          const data = await res.json();
+          
+          if (data.candles && data.candles.length > 0) {
+            candleSeries.setData(data.candles);
+            priceChart.timeScale().fitContent();
             
-            if (name === 'config') loadConfig();
+            // Add trade markers
+            if (data.markers && data.markers.length > 0) {
+              const chartMarkers = data.markers.map(m => ({
+                time: Math.floor(new Date(m.timestamp).getTime() / 1000),
+                position: m.side === "BUY" ? "belowBar" : "aboveBar",
+                color: m.side === "BUY" ? "#64ffda" : "#ff5f5f",
+                shape: m.side === "BUY" ? "arrowUp" : "arrowDown",
+                text: m.side === "BUY" ? "B" : "S",
+              }));
+              candleSeries.setMarkers(chartMarkers);
+            }
+          }
+        } catch (e) {
+          console.error("Failed to load price chart:", e);
+        }
+      }
+      
+      // Init price chart after page load
+      setTimeout(initPriceChart, 500);
+
+      // --- DASHBOARD LOGIC ---
+      let socket;
+      let currentFilter = "ALL";
+      
+      // Performance Toggle State
+      let perfMode = 'all'; // all, 50, 10
+      window.backendStats = {}; // Store full stats from backend
+      
+      function setPerfMode(mode) {
+        perfMode = String(mode);
+        
+        // Update UI buttons
+        ['all', '50', '10'].forEach(m => {
+          const btn = document.getElementById(`perf-toggle-${m}`);
+          if (btn) {
+            const isActive = perfMode === m;
+            btn.style.background = isActive ? 'rgba(201,162,39,0.2)' : 'transparent';
+            btn.style.color = isActive ? '#c9a227' : '#666';
+            btn.style.fontWeight = isActive ? '600' : '400';
+          }
+        });
+        
+        // Trigger recalc
+        updateWinRate();
+      }
+
+      function updateFilter(val) {
+        currentFilter = val;
+        // Reload chart if specific symbol selected
+        if (val !== "ALL") {
+            loadPriceChart(val);
+        }
+        renderTrades();
+      }
+
+      // Equity chart time range filtering
+      let equityRange = '1h'; // Default range
+      let fullEquityData = []; // Store all equity data
+      
+      function setEquityRange(range) {
+        equityRange = range;
+        
+        // Update button styles
+        document.querySelectorAll('.eq-range-btn').forEach(btn => {
+          btn.style.background = 'transparent';
+          btn.style.borderColor = '#444';
+          btn.style.color = '#888';
+        });
+        const activeBtn = document.getElementById(`eq-${range}`);
+        if (activeBtn) {
+          activeBtn.style.background = 'rgba(201,162,39,0.2)';
+          activeBtn.style.borderColor = '#c9a227';
+          activeBtn.style.color = '#c9a227';
         }
         
-        async function loadConfig() {
-            try {
-                const res = await fetch('/api/config');
-                const conf = await res.json();
-                const container = document.getElementById('config-form');
-                
-                let html = '';
-                const labels = {
-                    'AS_GAMMA': 'Risk Aversion (Gamma)',
-                    'AS_KAPPA': 'Inventory Aversion (Kappa)',
-                    'RISK_MAX_POSITION_PER_SYMBOL_USD': 'Max Position ($)',
-                    'RISK_MAX_POSITION_TOTAL_USD': 'Max Total Exposure ($)',
-                    'MIN_PROFIT_BPS': 'Min Profit (BPS)',
-                    'MAKER_FEE_BPS': 'Maker Fee (BPS)'
-                };
-                
-                Object.entries(conf).forEach(([key, val]) => {
-                    const label = labels[key] || key;
-                    html += `
-                        <div style="margin-bottom:15px;">
-                            <label style="display:block; font-size:0.75rem; color:var(--text-secondary); margin-bottom:5px;">${label}</label>
-                            <input type="number" step="0.01" id="conf-${key}" value="${val}" 
-                                   style="width:100%; bg:transparent; border:1px solid #333; background:#111; color:#fff; padding:8px; border-radius:4px; font-family:'JetBrains Mono'">
-                        </div>
-                    `;
-                });
-                container.innerHTML = html;
-            } catch(e) {
-                console.error(e);
+        // Filter and update chart
+        updateEquityChart();
+      }
+      
+      function updateEquityChart() {
+        const container = document.getElementById("equity-chart");
+        
+        // Handle No Data state
+        if (!areaSeries || fullEquityData.length === 0) {
+            if (container && fullEquityData.length === 0) {
+                 if (!document.getElementById("eq-placeholder")) {
+                    const div = document.createElement("div");
+                    div.id = "eq-placeholder";
+                    div.style.cssText = "position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); color:#666; font-size:0.8rem; pointer-events:none";
+                    div.innerText = "Waiting for equity data...";
+                    container.style.position = "relative";
+                    container.appendChild(div);
+                }
+            }
+            return;
+        }
+        
+        // Remove placeholder if exists
+        const ph = document.getElementById("eq-placeholder");
+        if (ph) ph.remove();
+        
+        const now = Math.floor(Date.now() / 1000);
+        let cutoff;
+        
+        switch(equityRange) {
+          case '1h': cutoff = now - 3600; break;
+          case '6h': cutoff = now - 21600; break;
+          case '24h': cutoff = now - 86400; break;
+          default: cutoff = now - 3600;
+        }
+        
+        // Process data: Filter -> Map keys (equity->value) -> Deduplicate Seconds
+        const uniqueMap = new Map();
+        fullEquityData.forEach(d => {
+            if (d.time >= cutoff) {
+                const t = Math.floor(d.time); // Ensure integer seconds
+                uniqueMap.set(t, d.value !== undefined ? d.value : d.equity);   // Keep latest value (Handle key difference)
+            }
+        });
+        
+        const chartData = Array.from(uniqueMap.keys())
+            .sort((a, b) => a - b)
+            .map(t => ({
+                time: t,
+                value: Number(uniqueMap.get(t)) // Force Number
+            }));
+            
+        if (chartData.length > 0) {
+          // console.log("Chart Data Sample:", chartData[chartData.length-1]); // Debug removed
+          areaSeries.applyOptions({
+              lineColor: '#C0C0C0', // Silver
+              lineWidth: 2,
+              topColor: 'rgba(192, 192, 192, 0.3)',
+              bottomColor: 'rgba(192, 192, 192, 0.0)'
+          });
+          areaSeries.setData(chartData);
+          
+          // Calculate and display percentage change
+          const pctEl = document.getElementById('equity-pct-change');
+          if (pctEl && chartData.length >= 2) {
+            const startVal = chartData[0].value;
+            const endVal = chartData[chartData.length - 1].value;
+            const pctChange = startVal > 0 ? ((endVal - startVal) / startVal) * 100 : 0;
+            const isPositive = pctChange >= 0;
+            pctEl.textContent = `${isPositive ? '+' : ''}${pctChange.toFixed(2)}%`;
+            pctEl.style.color = isPositive ? '#00E676' : '#FF5252';
+            pctEl.style.background = isPositive ? 'rgba(0, 230, 118, 0.15)' : 'rgba(255, 82, 82, 0.15)';
+          } else if (pctEl) {
+            pctEl.textContent = '-- %';
+            pctEl.style.color = '#888';
+            pctEl.style.background = 'rgba(100,100,100,0.3)';
+          }
+          
+          // Force resize to ensure render
+          chart.resize(container.clientWidth, container.clientHeight);
+          chart.timeScale().fitContent();
+          
+          // Clear placeholder if it exists (double check)
+           const ph = document.getElementById("eq-placeholder");
+           if (ph) ph.remove();
+        } else {
+            // Show placeholder if valid data resulted in empty set (e.g. range too small)
+             if (container && !document.getElementById("eq-placeholder")) {
+                const div = document.createElement("div");
+                div.id = "eq-placeholder";
+                div.style.cssText = "position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); color:#666; font-size:0.8rem; pointer-events:none";
+                div.innerText = "No data in this time range";
+                container.style.position = "relative";
+                container.appendChild(div);
             }
         }
+      }
+
+      // Crypto emoji helper
+      function getSymbolEmoji(symbol) {
+        const s = (symbol || "").toUpperCase();
+        if (s.includes("BTC")) return "₿";
+        if (s.includes("ETH")) return "⟠";
+        if (s.includes("SOL")) return "◎";
+        if (s.includes("BNB")) return "🔶";
+        if (s.includes("XRP")) return "💧";
+        if (s.includes("DOGE")) return "🐕";
+        if (s.includes("ADA")) return "🔷";
+        if (s.includes("LTC")) return "Ł";
+        if (s.includes("MATIC") || s.includes("POL")) return "🟣";
+        if (s.includes("AVAX")) return "🔺";
+        if (s.includes("LINK")) return "⛓️";
+        if (s.includes("DOT")) return "⚫";
+        return "🪙"; // Default coin emoji
+      }
+      
+      // Format symbol with emoji and uppercase
+      function formatSymbol(symbol) {
+        const s = (symbol || "").toUpperCase();
+        return `${getSymbolEmoji(s)} ${s}`;
+      }
+
+      // Render trades with filtering and limits
+      function renderTrades() {
+        const trades = window.latestTrades || [];
+        const sortMode = document.getElementById("trades-sort")?.value || "latest";
+        const symbolFilter = document.getElementById("symbol-filter")?.value || "ALL";
         
-        async function saveConfig() {
-             const keys = ['AS_GAMMA', 'AS_KAPPA', 'RISK_MAX_POSITION_PER_SYMBOL_USD', 'RISK_MAX_POSITION_TOTAL_USD', 'MIN_PROFIT_BPS', 'MAKER_FEE_BPS'];
-             const payload = {};
-             keys.forEach(k => {
-                 const el = document.getElementById(`conf-${k}`);
-                 if(el) payload[k] = parseFloat(el.value);
-             });
-             
-             try {
-                 await fetch('/api/config', {
-                     method: 'POST',
-                     headers: {'Content-Type': 'application/json'},
-                     body: JSON.stringify(payload)
-                 });
-                 alert("✅ CONFIG SAVED! Strategies will update in ~2s.");
-             } catch(e) {
-                 alert("❌ SAVE FAILED: " + e.message);
+        // Filter by symbol if needed
+        let filteredTrades = trades;
+        if (symbolFilter !== "ALL") {
+          filteredTrades = trades.filter(t => t.symbol === symbolFilter);
+        }
+        
+        // Sort trades
+        let sortedTrades = [...filteredTrades];
+        if (sortMode === "best") {
+          sortedTrades.sort((a, b) => b.pnl - a.pnl);
+        } else if (sortMode === "worst") {
+          sortedTrades.sort((a, b) => a.pnl - b.pnl);
+        }
+        
+        const tradesContainer = document.getElementById("trades-list");
+        if (!tradesContainer) return;
+        
+        // Limit to 13 trades for clean UI
+        tradesContainer.innerHTML = sortedTrades.slice(0, 13).map((t) => {
+          const isBuy = t.side === "BUY";
+          const isProfit = t.pnl > 0;
+          const isLoss = t.pnl < 0;
+          
+          // Format timestamp
+          const ts = t.timestamp ? new Date(t.timestamp * 1000).toLocaleTimeString() : "";
+          
+          // Border color based on PROFIT/LOSS
+          let borderColor = "rgba(255,255,255,0.1)"; 
+          if (isProfit) borderColor = "var(--success)";
+          else if (isLoss) borderColor = "var(--danger)";
+          
+          return `
+            <div class="list__item" style="border-left: 3px solid ${borderColor}">
+              <div style="display:flex; gap:10px; align-items:center; flex:1">
+                <span class="badge ${isBuy ? "badge--buy" : "badge--sell"}">${t.side}</span>
+                <span style="font-weight:600; font-size:0.85rem; min-width:100px">${formatSymbol(t.symbol)}</span>
+                <span style="font-size:0.65rem; opacity:0.5">${ts}</span>
+              </div>
+              <span style="font-weight:600; font-size:0.85rem" class="${isProfit ? "text-success" : isLoss ? "text-danger" : ""}">${isProfit ? "+" : ""}$${t.pnl.toFixed(4)}</span>
+            </div>
+          `;
+        }).join("");
+      }
+      
+      // Update win rate with Toggle logic
+      function updateWinRate() {
+        const trades = window.latestTrades || [];
+        const mode = perfMode;
+        
+        // Determine slice for local calc (Heatmap is always based on visible data)
+        let limit = trades.length;
+        if (mode === '10') limit = 10;
+        if (mode === '50') limit = 50;
+        const slice = trades.slice(0, limit);
+        
+        let localWins = 0, localLosses = 0;
+        let localProfit = 0;
+        let totalVolume = 0;
+        let symbolStats = {};
+        
+        let bestTrade = null, worstTrade = null;
+        
+        slice.forEach(t => {
+            if (t.pnl > 0) localWins++;
+            else if (t.pnl < 0) localLosses++;
+            localProfit += t.pnl;
+            
+            // Stats
+            if (t.price && t.quantity) totalVolume += t.price * t.quantity;
+            
+            // Heatmap stats
+            const sym = (t.symbol || "").toUpperCase();
+            if (!symbolStats[sym]) symbolStats[sym] = { pnl: 0, count: 0 };
+            symbolStats[sym].pnl += t.pnl;
+            symbolStats[sym].count++;
+            
+            if (!bestTrade || t.pnl > bestTrade.pnl) bestTrade = t;
+            if (!worstTrade || t.pnl < worstTrade.pnl) worstTrade = t; 
+        });
+        
+        // Determine Display Values for KPIs
+        let displayWins = localWins;
+        let displayLosses = localLosses;
+        let displayProfit = localProfit;
+        let displayCount = slice.length;
+        
+        // If 'ALL' mode, use backend true totals
+        if (mode === 'all' && window.backendStats && window.backendStats.total > 0) {
+            displayWins = window.backendStats.winners;
+            displayLosses = window.backendStats.losers;
+            displayProfit = window.backendStats.realized; 
+            displayCount = window.backendStats.total;
+        }
+        
+        const totalDecisive = displayWins + displayLosses;
+        const winRate = totalDecisive > 0 ? (displayWins / totalDecisive * 100) : 0;
+        
+        document.getElementById("win-rate").innerText = `${winRate.toFixed(1)}%`;
+        document.getElementById("wins-losses").innerText = `${displayWins} / ${displayLosses}`;
+        
+        document.getElementById("daily-trades").innerText = displayCount;
+        document.getElementById("daily-volume").innerText = `$${totalVolume.toFixed(0)}`; 
+        
+        const avgEl = document.getElementById("avg-profit");
+        // Avg profit per trade
+        const avgVal = displayCount > 0 ? displayProfit / displayCount : 0;
+        avgEl.innerText = `${avgVal >= 0 ? "+" : ""}$${avgVal.toFixed(4)}`;
+        avgEl.className = avgVal >= 0 ? "text-success" : "text-danger";
+
+        // Update Best/Worst display
+        if (mode === 'all' && window.backendStats && window.backendStats.total > 0) {
+             document.getElementById("best-trade-pnl").innerText = `$${(window.backendStats.bestTradePnl || 0).toFixed(4)}`;
+             document.getElementById("best-trade-symbol").innerText = "-"; 
+             document.getElementById("worst-trade-pnl").innerText = `$${(window.backendStats.worstTradePnl || 0).toFixed(4)}`;
+             document.getElementById("worst-trade-symbol").innerText = "-";
+        } else {
+             if (bestTrade) {
+                document.getElementById("best-trade-pnl").innerText = `$${bestTrade.pnl.toFixed(4)}`;
+                document.getElementById("best-trade-symbol").innerText = formatSymbol(bestTrade.symbol);
+             } else {
+                 document.getElementById("best-trade-pnl").innerText = "$0.0000";
+                 document.getElementById("best-trade-symbol").innerText = "-";
+             }
+             if (worstTrade) {
+                document.getElementById("worst-trade-pnl").innerText = `$${worstTrade.pnl.toFixed(4)}`;
+                document.getElementById("worst-trade-symbol").innerText = formatSymbol(worstTrade.symbol);
+             } else {
+                 document.getElementById("worst-trade-pnl").innerText = "$0.0000";
+                 document.getElementById("worst-trade-symbol").innerText = "-";
              }
         }
 
-        function connect() {
-            const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            socket = new WebSocket(`${proto}//${window.location.host}/ws`);
-            socket.onopen = () => {
-                const el = document.getElementById('system-status');
-                el.className = 'status-pill status-pill--ok';
-                el.innerHTML = '<div class="status-dot active"></div> ONLINE';
-            };
-            socket.onmessage = (e) => updateUI(JSON.parse(e.data));
-            socket.onclose = () => {
-                 const el = document.getElementById('system-status');
-                 el.className = 'status-pill status-pill--error';
-                 el.innerHTML = '<div class="status-dot"></div> OFFLINE';
-                 setTimeout(connect, 2000);
-            };
+        
+        // Find best symbol
+        let bestSym = "-";
+        let bestSymPnl = -Infinity;
+        Object.entries(symbolStats).forEach(([sym, data]) => {
+          if (data.pnl > bestSymPnl) {
+            bestSymPnl = data.pnl;
+            bestSym = sym;
+          }
+        });
+        document.getElementById("best-symbol").innerText = getSymbolEmoji(bestSym) + " " + bestSym.replace("USDT", "");
+        
+        // Update Profit Heatmap
+        const heatmapEl = document.getElementById("profit-heatmap");
+        if (heatmapEl && Object.keys(symbolStats).length > 0) {
+          heatmapEl.innerHTML = Object.entries(symbolStats)
+            .sort((a, b) => b[1].pnl - a[1].pnl)
+            .map(([sym, data]) => {
+              const isPositive = data.pnl >= 0;
+              const bgColor = isPositive ? "rgba(0, 230, 118, 0.15)" : "rgba(255, 71, 87, 0.15)";
+              const borderColor = isPositive ? "rgba(0, 230, 118, 0.4)" : "rgba(255, 71, 87, 0.4)";
+              const textColor = isPositive ? "#00e676" : "#ff4757";
+              return `<div style="padding:5px 10px; border-radius:4px; background:${bgColor}; border:1px solid ${borderColor}; font-size:0.75rem">
+                <span style="color:#ccc">${getSymbolEmoji(sym)} ${sym.replace("USDT", "")}</span>
+                <span style="color:${textColor}; margin-left:6px; font-weight:600">${isPositive ? "+" : ""}$${data.pnl.toFixed(2)}</span>
+              </div>`;
+            }).join("");
+        }
+      }
+
+      // Rate limit meter polling
+      async function updateRateLimit() {
+        try {
+          const res = await fetch("/api/rate_limit");
+          const data = await res.json();
+          
+          const bar = document.getElementById("rate-limit-bar");
+          const pct = document.getElementById("rate-limit-pct");
+          
+          bar.style.width = `${Math.min(data.pct_used, 100)}%`;
+          pct.innerText = `${data.pct_used.toFixed(0)}%`;
+          
+          // Color coding
+          if (data.status === "CRITICAL") {
+            bar.style.background = "var(--danger)";
+          } else if (data.status === "WARNING") {
+            bar.style.background = "var(--warning)";
+          } else {
+            bar.style.background = "var(--success)";
+          }
+        } catch (e) {
+          console.error("Rate limit check failed:", e);
+        }
+      }
+      
+      // Poll rate limit every 10 seconds
+      setInterval(updateRateLimit, 10000);
+      updateRateLimit(); // Initial check
+
+      async function sendAction(action) {
+        if (action === "flatten" && !confirm("⚠️ CONFIRM FLATTEN?")) return;
+        await fetch(`/api/action/${action}`, { method: "POST" });
+      }
+
+      function toggleHelp(id) {
+        const pan = document.getElementById(id);
+        if (pan) pan.style.display = pan.style.display === "none" ? "block" : "none";
+      }
+
+      async function switchTab(name) {
+        ["equity", "orders", "depth", "strategy", "risk", "latency", "backtest", "config"].forEach((t) => {
+          document.getElementById("view-" + t).style.display =
+            t === name ? (t === "equity" ? "flex" : "block") : "none";
+          document.getElementById("btn-" + t).className =
+            t === name ? "tabs__btn active" : "tabs__btn";
+        });
+        
+        // Force chart resize when tab becomes visible
+        if (name === "equity" || name === "") {
+             setTimeout(() => {
+                 window.dispatchEvent(new Event("resize"));
+                 if (chart && chartContainer) {
+                     chart.timeScale().fitContent();
+                 }
+             }, 50);
+        } else {
+            window.dispatchEvent(new Event("resize"));
         }
 
-        function updateUI(data) {
-            try {
-                // Populate Filter
-                 const select = document.getElementById('symbol-filter');
-                 const known = new Set(Array.from(select.options).map(o => o.value));
-                 const incoming = new Set([...Object.keys(data.inventory||{}), ...(data.recent_trades||[]).map(t => t.symbol)]);
-                 incoming.forEach(s => {
-                     if(!known.has(s)) {
-                         const opt = document.createElement('option');
-                         opt.value = s; opt.innerText = s.toUpperCase();
-                         select.appendChild(opt);
-                     }
-                 });
+        if (name === "config") loadConfig();
+        if (name === "orders") loadOrdersView();
+        if (name === "latency") loadLatencyData();
+        if (name === "depth") loadOrderBook("btcusdt");
+        if (name === "backtest") checkBacktestStatus();
+      }
 
-                 // KPIs
-                 document.getElementById('net-liq').innerText = `$${(data.balance||0).toFixed(2)}`;
-                 const rpnl = document.getElementById('realized-pnl');
-                 rpnl.innerText = `$${(data.realized_pnl||0).toFixed(2)}`;
-                 rpnl.className = `kpi__value ${(data.realized_pnl||0)>=0 ? 'text-success' : 'text-danger'}`;
-                 
-                 const upnl = document.getElementById('unrealized-pnl');
-                 upnl.innerText = `$${(data.unrealized_pnl||0).toFixed(2)}`;
-                 upnl.className = `kpi__value ${(data.unrealized_pnl||0)>=0 ? 'text-success' : 'text-danger'}`;
-                 
-                 document.getElementById('win-rate').innerText = `${(data.win_rate_decision||0).toFixed(1)}%`;
-                 document.getElementById('maker-rate').innerText = `${(data.maker_rate||0).toFixed(0)}%`;
-                 if(document.getElementById('sharpe-ratio'))
-                     document.getElementById('sharpe-ratio').innerText = (data.sharpe_ratio||0).toFixed(2);
+      // --- CONFIG PRESETS ---
+      const configPresets = {
+        low: {
+          // Conservative: Wide spreads, low risk, slower profits
+          AS_GAMMA: 3.0,           // Higher risk aversion
+          AS_KAPPA: 3.0,           // Higher inventory aversion  
+          RISK_MAX_POSITION_PER_SYMBOL_USD: 300,
+          RISK_MAX_POSITION_TOTAL_USD: 1000,
+          MIN_PROFIT_BPS: 15,   // Require more profit per trade
+          MAKER_FEE_BPS: 2
+        },
+        recommended: {
+          // Balanced: Good mix of safety and profitability
+          AS_GAMMA: 2.0,
+          AS_KAPPA: 2.0,
+          RISK_MAX_POSITION_PER_SYMBOL_USD: 500,
+          RISK_MAX_POSITION_TOTAL_USD: 2000,
+          MIN_PROFIT_BPS: 10,
+          MAKER_FEE_BPS: 2
+        },
+        high: {
+          // Aggressive: Tight spreads, higher risk, faster profits
+          AS_GAMMA: 1.0,           // Lower risk aversion = tighter spreads
+          AS_KAPPA: 1.5,           // Lower inventory aversion
+          RISK_MAX_POSITION_PER_SYMBOL_USD: 1000,
+          RISK_MAX_POSITION_TOTAL_USD: 5000,
+          MIN_PROFIT_BPS: 5,    // Accept smaller profits
+          MAKER_FEE_BPS: 2
+        },
+        degen: {
+          // EXTREME: Minimum spreads, max leverage/exposure. Very dangerous.
+          AS_GAMMA: 0.5,           // Min risk aversion - tightest spreads
+          AS_KAPPA: 0.5,           // Min inventory aversion - hold bags
+          RISK_MAX_POSITION_PER_SYMBOL_USD: 5000,
+          RISK_MAX_POSITION_TOTAL_USD: 25000,
+          MIN_PROFIT_BPS: 2,       // Scalp tiny moves
+          MAKER_FEE_BPS: 2
+        },
+        scalper: {
+          // SCALPER: Tight spreads, high volume, low inventory. Quick in/out.
+          AS_GAMMA: 0.8,           // Low risk aversion = tight spreads
+          AS_KAPPA: 4.0,           // HIGH inventory aversion = don't hold!
+          RISK_MAX_POSITION_PER_SYMBOL_USD: 200,
+          RISK_MAX_POSITION_TOTAL_USD: 800,
+          MIN_PROFIT_BPS: 3,       // Accept tiny profits per trade
+          MAKER_FEE_BPS: 2
+        },
+        swing: {
+          // SWING: Wide spreads, hold longer, bigger profits per trade.
+          AS_GAMMA: 3.5,           // High risk aversion = wide spreads
+          AS_KAPPA: 0.8,           // Low inventory aversion = hold positions
+          RISK_MAX_POSITION_PER_SYMBOL_USD: 1500,
+          RISK_MAX_POSITION_TOTAL_USD: 6000,
+          MIN_PROFIT_BPS: 25,      // Require larger profit per trade
+          MAKER_FEE_BPS: 2
+        }
+      };
+      
+      function applyPreset(level) {
+        if (level === 'degen') {
+          const confirmed = confirm("⚠️ WARNING: DEGEN MODE ⚠️\n\nThis preset uses EXTREME settings that can lead to rapid liquidation.\n\n• Tightest spreads possible\n• High position limits\n• Minimal profit taking\n\nYour capital is at SIGNIFICANT risk. Are you sure you want to proceed?");
+          if (!confirmed) return;
+        }
 
-                 // Positions
-                 const posContainer = document.getElementById('positions-list');
-                 const inv = data.inventory || {};
-                 const filteredInv = Object.entries(inv).filter(([k,v]) => currentFilter === 'ALL' || k === currentFilter);
-                 
-                 posContainer.innerHTML = filteredInv.length ? '' : '<div style="text-align:center; padding:20px; opacity:0.5">No positions</div>';
-                 filteredInv.forEach(([sym, info]) => {
-                     const isLong = info.qty > 0;
-                     posContainer.innerHTML += `
-                        <div class="list__item" style="border-left: 3px solid ${isLong ? 'var(--success)' : 'var(--danger)'}">
-                            <div style="font-weight:600">${sym}</div>
-                            <div style="text-align:right">
-                                <div style="font-size:0.8rem">${info.qty}</div>
-                                <div class="${info.pnl>=0?'text-success':'text-danger'}">$${info.pnl.toFixed(2)}</div>
+        const preset = configPresets[level];
+        if (!preset) return;
+        
+        // Fill in form fields with preset values (using 'conf-' prefix to match form)
+        Object.entries(preset).forEach(([key, value]) => {
+          const input = document.getElementById(`conf-${key}`);
+          if (input) {
+            input.value = value;
+            input.style.borderColor = level === 'low' ? '#00e676' : level === 'high' ? '#ff4757' : level === 'degen' ? '#8a2be2' : '#c9a227';
+          }
+        });
+        
+        // Flash the form to indicate change
+        const form = document.getElementById('config-form');
+        if (form) {
+          form.style.transition = 'background 0.3s';
+          let color = 'rgba(201,162,39,0.05)';
+          if (level === 'low') color = 'rgba(0,230,118,0.05)';
+          if (level === 'high') color = 'rgba(255,71,87,0.05)';
+          if (level === 'degen') color = 'rgba(138,43,226,0.1)';
+          
+          form.style.background = color;
+          setTimeout(() => form.style.background = 'transparent', 500);
+        }
+      }
+
+      // --- BACKTEST FUNCTIONS ---
+      let backtestPollInterval = null;
+      
+      async function runBacktest() {
+        const symbol = document.getElementById("bt-symbol").value;
+        const duration = document.getElementById("bt-duration").value;
+        
+        document.getElementById("run-backtest-btn").disabled = true;
+        document.getElementById("bt-status").innerText = "Starting...";
+        document.getElementById("bt-output").innerHTML = "Launching simulation...";
+        
+        try {
+          const res = await fetch("/api/backtest/run", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ symbol, duration_minutes: parseInt(duration) })
+          });
+          
+          if (res.ok) {
+            pollBacktestStatus();
+          } else {
+            const data = await res.json();
+            document.getElementById("bt-status").innerText = "Error: " + (data.error || "Failed to start");
+            document.getElementById("run-backtest-btn").disabled = false;
+          }
+        } catch (e) {
+          document.getElementById("bt-status").innerText = "Error: " + e.message;
+          document.getElementById("run-backtest-btn").disabled = false;
+        }
+      }
+      
+      function pollBacktestStatus() {
+        if (backtestPollInterval) clearInterval(backtestPollInterval);
+        
+        backtestPollInterval = setInterval(async () => {
+          try {
+            const res = await fetch("/api/backtest/status");
+            const data = await res.json();
+            
+            document.getElementById("bt-status").innerText = data.status;
+            document.getElementById("bt-progress-pct").innerText = `${data.progress}%`;
+            document.getElementById("bt-progress-bar").style.width = `${data.progress}%`;
+            
+            if (data.last_output && data.last_output.length > 0) {
+              document.getElementById("bt-output").innerHTML = data.last_output.join("<br>");
+            }
+            
+            if (!data.running) {
+              clearInterval(backtestPollInterval);
+              backtestPollInterval = null;
+              document.getElementById("run-backtest-btn").disabled = false;
+              
+              if (data.has_report) {
+                document.getElementById("bt-report-link").style.display = "inline";
+                document.getElementById("bt-report-frame").src = "/api/backtest/report";
+              }
+            }
+          } catch (e) {
+            console.error("Backtest poll error:", e);
+          }
+        }, 1000);
+      }
+      
+      async function checkBacktestStatus() {
+        try {
+          const res = await fetch("/api/backtest/status");
+          const data = await res.json();
+          
+          document.getElementById("bt-status").innerText = data.status;
+          document.getElementById("bt-progress-pct").innerText = `${data.progress}%`;
+          document.getElementById("bt-progress-bar").style.width = `${data.progress}%`;
+          
+          if (data.running) {
+            document.getElementById("run-backtest-btn").disabled = true;
+            pollBacktestStatus();
+          }
+          
+          if (data.has_report) {
+            document.getElementById("bt-report-link").style.display = "inline";
+            document.getElementById("bt-report-frame").src = "/api/backtest/report";
+          }
+        } catch (e) {
+          console.error("Failed to check backtest status:", e);
+        }
+      }
+
+
+      // --- ORDER BOOK DEPTH FUNCTIONS ---
+      async function loadOrderBook(symbol) {
+        try {
+          const res = await fetch(`/api/orderbook/${symbol}`);
+          const data = await res.json();
+          
+          // Update spread display
+          document.getElementById("spread-display").innerText = 
+            `Spread: ${data.spread_bps?.toFixed(2) || '--'} bps | Mid: $${data.mid_price?.toFixed(2) || '--'}`;
+          
+          const bidsContainer = document.getElementById("depth-bids");
+          const asksContainer = document.getElementById("depth-asks");
+          
+          // Find max cumulative for scaling
+          const maxBidCum = Math.max(...(data.bids || []).map(b => b.cumulative), 1);
+          const maxAskCum = Math.max(...(data.asks || []).map(a => a.cumulative), 1);
+          const maxCum = Math.max(maxBidCum, maxAskCum);
+          
+          // Render bids (best bid at top)
+          bidsContainer.innerHTML = (data.bids || []).slice(0, 15).map(b => {
+            const pct = (b.cumulative / maxCum) * 100;
+            return `
+              <div style="position:relative; padding:3px 6px; font-size:0.7rem; display:flex; justify-content:space-between">
+                <div style="position:absolute; left:0; top:0; bottom:0; width:${pct}%; background:rgba(100,255,218,0.15); z-index:0"></div>
+                <span style="z-index:1; color:var(--success)">${b.price.toFixed(2)}</span>
+                <span style="z-index:1; opacity:0.7">${b.qty.toFixed(4)}</span>
+              </div>
+            `;
+          }).join('');
+          
+          // Render asks (best ask at top)
+          asksContainer.innerHTML = (data.asks || []).slice(0, 15).map(a => {
+            const pct = (a.cumulative / maxCum) * 100;
+            return `
+              <div style="position:relative; padding:3px 6px; font-size:0.7rem; display:flex; justify-content:space-between">
+                <div style="position:absolute; right:0; top:0; bottom:0; width:${pct}%; background:rgba(255,95,95,0.15); z-index:0"></div>
+                <span style="z-index:1; color:var(--danger)">${a.price.toFixed(2)}</span>
+                <span style="z-index:1; opacity:0.7">${a.qty.toFixed(4)}</span>
+              </div>
+            `;
+          }).join('');
+          
+        } catch (e) {
+          console.error("Failed to load order book:", e);
+        }
+      }
+
+
+      // --- ORDERS TAB FUNCTIONS ---
+      async function loadOrdersView() {
+        await Promise.all([loadOpenOrders(), loadDecisionLog()]);
+      }
+
+      async function loadOpenOrders() {
+        try {
+          const res = await fetch("/api/open_orders");
+          const data = await res.json();
+          const container = document.getElementById("open-orders-list");
+          
+          if (!data.orders || data.orders.length === 0) {
+            container.innerHTML = '<div style="text-align:center; padding:20px; opacity:0.5">No open orders</div>';
+            return;
+          }
+
+          container.innerHTML = data.orders.map(o => `
+            <div class="list__item" style="border-left: 3px solid ${o.side === 'BUY' ? 'var(--success)' : 'var(--danger)'}">
+              <div style="flex:1">
+                <span class="badge ${o.side === 'BUY' ? 'badge--buy' : 'badge--sell'}">${o.side}</span>
+                <span style="font-weight:600; margin-left:8px">${o.symbol}</span>
+                <span style="opacity:0.6; margin-left:8px">${o.quantity} @ $${parseFloat(o.price).toFixed(2)}</span>
+              </div>
+              <span style="font-size:0.7rem; opacity:0.5; margin-right:10px">${o.status}</span>
+              <button onclick="cancelOrder('${o.client_order_id}')" style="background:var(--danger); color:#fff; border:none; padding:4px 8px; border-radius:4px; cursor:pointer; font-size:0.65rem">✕</button>
+            </div>
+          `).join('');
+        } catch (e) {
+          console.error("Failed to load open orders:", e);
+        }
+      }
+
+      async function cancelOrder(orderId) {
+          if (!confirm("Cancel order " + orderId + "?")) return;
+          try {
+              const res = await fetch(`/api/cancel_order/${orderId}`, { method: 'POST' });
+              if (res.ok) {
+                  showToast("Order cancellation requested", "success");
+                  loadOpenOrders(); // Refresh list associated with UI
+              } else {
+                  throw new Error("Failed");
+              }
+          } catch (e) {
+              showToast("Cancel failed: " + e.message, "error");
+          }
+      }
+
+      async function loadDecisionLog() {
+        try {
+          const res = await fetch("/api/decision_log");
+          const data = await res.json();
+          const container = document.getElementById("decision-log");
+          
+          if (!data.decisions || data.decisions.length === 0) {
+            container.innerHTML = '<div style="text-align:center; padding:20px; opacity:0.5">No decision data</div>';
+            return;
+          }
+
+          container.innerHTML = data.decisions.map(d => `
+            <div class="list__item" style="border-left: 3px solid ${d.skip_reason ? 'var(--warning)' : 'var(--success)'}">
+              <div style="flex:1">
+                <span style="font-weight:600">${d.symbol}</span>
+                <span style="opacity:0.6; margin-left:8px; font-size:0.75rem">${d.regime}</span>
+              </div>
+              <div style="text-align:right; font-size:0.75rem">
+                ${d.skip_reason 
+                  ? `<span style="color:var(--warning)">⏸ ${d.skip_reason}</span>` 
+                  : '<span style="color:var(--success)">✓ Quoting</span>'}
+              </div>
+            </div>
+          `).join('');
+        } catch (e) {
+          console.error("Failed to load decision log:", e);
+        }
+      }
+
+      async function closePosition(symbol) {
+        if (!confirm(`Close ${symbol} position?`)) return;
+        try {
+          await fetch(`/api/close/${symbol}`, { method: "POST" });
+          alert(`✅ Close signal sent for ${symbol}`);
+        } catch (e) {
+          alert("❌ Failed: " + e.message);
+        }
+      }
+
+      async function cancelAllOrders() {
+        if (!confirm("Cancel ALL open orders?")) return;
+        try {
+          await fetch("/api/cancel_orders", { method: "POST" });
+          alert("✅ Cancel all orders signal sent");
+          loadOpenOrders();
+        } catch (e) {
+          alert("❌ Failed: " + e.message);
+        }
+      }
+
+      async function loadConfig() {
+        try {
+          const res = await fetch("/api/config");
+          const conf = await res.json();
+          const container = document.getElementById("config-form");
+
+          let html = "";
+          const labels = {
+            AS_GAMMA: "Risk Aversion (Gamma)",
+            AS_KAPPA: "Inventory Aversion (Kappa)",
+            RISK_MAX_POSITION_PER_SYMBOL_USD: "Max Position ($)",
+            RISK_MAX_POSITION_TOTAL_USD: "Max Total Exposure ($)",
+            MIN_PROFIT_BPS: "Min Profit (BPS)",
+            MAKER_FEE_BPS: "Maker Fee (BPS)",
+          };
+          
+          const tooltips = {
+            AS_GAMMA: "Controls spread width. ↑ Higher = wider spreads, safer but fewer trades. ↓ Lower = tighter spreads, more trades but riskier. Range: 0.5-5.0",
+            AS_KAPPA: "Controls how fast to reduce inventory. ↑ Higher = sell faster when overexposed. ↓ Lower = hold positions longer. Range: 0.5-5.0",
+            RISK_MAX_POSITION_PER_SYMBOL_USD: "Max position size per coin in USD. ↑ More exposure per coin. ↓ Safer smaller positions.",
+            RISK_MAX_POSITION_TOTAL_USD: "Total portfolio limit in USD across all coins. ↑ More capital at risk. ↓ Conservative total exposure.",
+            MIN_PROFIT_BPS: "Minimum profit target in basis points (1 BPS = 0.01%). ↑ Only take bigger profits, fewer trades. ↓ Accept smaller profits, more trades.",
+            MAKER_FEE_BPS: "Exchange maker fee in basis points. Check your exchange for exact value. Typically 2-10 BPS."
+          };
+
+          Object.entries(conf).forEach(([key, val]) => {
+            const label = labels[key] || key;
+            const tooltip = tooltips[key] || "";
+            html += `
+                        <div style="margin-bottom:18px;">
+                            <label style="display:block; font-size:0.75rem; color:var(--text-secondary); margin-bottom:4px;">${label}</label>
+                            <input type="number" step="0.01" id="conf-${key}" value="${val}" 
+                                   style="width:100%; border:1px solid #333; background:#111; color:#fff; padding:8px; border-radius:4px; font-family:'JetBrains Mono'">
+                            <div style="font-size:0.65rem; color:#888; margin-top:4px; line-height:1.4">💡 ${tooltip}</div>
+                        </div>
+                    `;
+          });
+          container.innerHTML = html;
+        } catch (e) {
+          console.error(e);
+        }
+      }
+
+      async function saveConfig() {
+        const keys = [
+          "AS_GAMMA",
+          "AS_KAPPA",
+          "RISK_MAX_POSITION_PER_SYMBOL_USD",
+          "RISK_MAX_POSITION_TOTAL_USD",
+          "MIN_PROFIT_BPS",
+          "MAKER_FEE_BPS",
+        ];
+        const payload = {};
+        keys.forEach((k) => {
+          const el = document.getElementById(`conf-${k}`);
+          if (el) payload[k] = parseFloat(el.value);
+        });
+
+        try {
+          const res = await fetch("/api/config", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          showToast("✅ Config applied! Strategy recalibrating...", "success");
+        } catch (e) {
+          showToast("❌ Save failed: " + e.message, "error");
+        }
+      }
+
+      // Toast notification for config feedback
+      function showToast(message, type = "info") {
+        const toast = document.createElement("div");
+        toast.style.cssText = `
+          position: fixed; top: 20px; right: 20px; z-index: 9999;
+          padding: 15px 25px; border-radius: 8px; font-family: 'JetBrains Mono';
+          animation: slideIn 0.3s; font-size: 0.85rem;
+          background: ${type === "success" ? "rgba(100,255,218,0.95)" : type === "error" ? "rgba(255,95,95,0.95)" : "rgba(255,255,255,0.95)"};
+          color: #000; box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+        `;
+        toast.innerText = message;
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 3000);
+      }
+
+      // Load fees data
+      async function loadFees() {
+        try {
+          const res = await fetch("/api/fees");
+          const data = await res.json();
+          document.getElementById("total-fees").innerText = `$${(data.total_fees || 0).toFixed(2)}`;
+          document.getElementById("fee-ratio").innerText = `${(data.maker_fees || 0).toFixed(2)}/${(data.taker_fees || 0).toFixed(2)}`;
+        } catch (e) {
+          console.error("Failed to load fees:", e);
+        }
+      }
+
+      // Load latency data for sparkline
+      async function loadLatencyData() {
+        try {
+          const res = await fetch("/api/latency");
+          const data = await res.json();
+          
+          // Update KPIs
+          document.getElementById("latency-avg").innerText = `${data.avg_ms?.toFixed(1) || 0}ms`;
+          document.getElementById("latency-p99").innerText = `${data.p99_ms?.toFixed(1) || 0}ms`;
+          document.getElementById("latency-max").innerText = `${data.max_ms?.toFixed(1) || 0}ms`;
+          
+          // Render sparkline
+          const sparkline = document.getElementById("latency-sparkline");
+          const history = data.history || [];
+          if (history.length > 0) {
+            const maxVal = Math.max(...history, 1);
+            sparkline.innerHTML = history.slice(-50).map(v => {
+              const pct = (v / maxVal) * 100;
+              const color = v > 100 ? "var(--danger)" : v > 50 ? "var(--warning)" : "var(--success)";
+              return `<div style="flex:1; background:${color}; height:${pct}%; min-height:2px; border-radius:2px"></div>`;
+            }).join('');
+          }
+        } catch (e) {
+          console.error("Failed to load latency data:", e);
+        }
+      }
+
+
+      function connect() {
+        const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+        socket = new WebSocket(`${proto}//${window.location.host}/ws`);
+        socket.onopen = () => {
+          const el = document.getElementById("system-status");
+          el.className = "status-pill status-pill--ok";
+          el.innerHTML = '<div class="status-dot active"></div> ONLINE';
+        };
+        socket.onmessage = (e) => updateUI(JSON.parse(e.data));
+        socket.onclose = () => {
+          const el = document.getElementById("system-status");
+          el.className = "status-pill status-pill--error";
+          el.innerHTML = '<div class="status-dot"></div> OFFLINE';
+          setTimeout(connect, 2000);
+        };
+      }
+
+      function updateUI(data) {
+        try {
+          // Store raw data for tools
+          window.latestTrades = data.recent_trades || [];
+          window.backendStats = {
+              winners: data.winners || 0,
+              losers: data.losers || 0,
+              breakevens: data.breakevens || 0,
+              total: (data.winners || 0) + (data.losers || 0) + (data.breakevens || 0),
+              realized: data.realized_pnl || 0,
+              bestTradePnl: data.best_trade || 0,
+              worstTradePnl: data.worst_trade || 0
+          };
+          updateWinRate(); // Recalculate metrics
+
+          // Populate Filter
+          const select = document.getElementById("symbol-filter");
+          const known = new Set(Array.from(select.options).map((o) => o.value));
+          const incoming = new Set([
+            ...Object.keys(data.inventory || {}),
+            ...(data.recent_trades || []).map((t) => t.symbol),
+          ]);
+          incoming.forEach((s) => {
+            if (!known.has(s)) {
+              const opt = document.createElement("option");
+              opt.value = s;
+              opt.innerText = s.toUpperCase();
+              select.appendChild(opt);
+            }
+          });
+
+          // KPIs
+          document.getElementById("net-liq").innerText = `$${(
+            data.balance || 0
+          ).toFixed(2)}`;
+          const rpnl = document.getElementById("realized-pnl");
+          rpnl.innerText = `$${(data.realized_pnl || 0).toFixed(2)}`;
+          rpnl.className = `kpi__value ${
+            (data.realized_pnl || 0) >= 0 ? "text-success" : "text-danger"
+          }`;
+
+          const upnl = document.getElementById("unrealized-pnl");
+          upnl.innerText = `$${(data.unrealized_pnl || 0).toFixed(2)}`;
+          upnl.className = `kpi__value ${
+            (data.unrealized_pnl || 0) >= 0 ? "text-success" : "text-danger"
+          }`;
+
+          // Win rate handled by updateWinRate() now via backendStats logic
+
+          document.getElementById("maker-rate").innerText = `${(
+            data.maker_rate || 0
+          ).toFixed(0)}%`;
+          if (document.getElementById("sharpe-ratio"))
+            document.getElementById("sharpe-ratio").innerText = (
+              data.sharpe_ratio || 0
+            ).toFixed(2);
+
+          // Positions
+          const posContainer = document.getElementById("positions-list");
+          const inv = data.inventory || {};
+          const filteredInv = Object.entries(inv).filter(
+            ([k, v]) => currentFilter === "ALL" || k === currentFilter
+          );
+
+          posContainer.innerHTML = filteredInv.length
+            ? ""
+            : '<div style="text-align:center; padding:20px; opacity:0.5">No positions</div>';
+          filteredInv.forEach(([sym, info]) => {
+            const isProfit = info.pnl >= 0;
+            const isLong = info.qty > 0;
+            posContainer.innerHTML += `
+                        <div class="list__item" style="border-left: 3px solid ${
+                          isProfit ? "var(--success)" : "var(--danger)"
+                        }">
+                            <div style="font-weight:600">${formatSymbol(sym)}</div>
+                            <div style="display:flex; align-items:center; gap:10px">
+                                <div style="text-align:right">
+                                    <div style="font-size:0.8rem; opacity:0.7">${isLong ? "+" : ""}${info.qty.toFixed(4)}</div>
+                                    <div class="${
+                                      isProfit ? "text-success" : "text-danger"
+                                    }">${isProfit ? "+" : ""}$${info.pnl.toFixed(2)}</div>
+                                </div>
+                                <button onclick="closePosition('${sym}')" style="background:var(--danger); color:#fff; border:none; padding:4px 8px; border-radius:4px; cursor:pointer; font-size:0.65rem">✕</button>
                             </div>
                         </div>
                      `;
-                 });
+          });
 
-                 // Strategy
-                 const stratContainer = document.getElementById('strategy-content');
-                 const state = data.strategy_state || {};
-                 const filteredState = Object.entries(state).filter(([k,v]) => currentFilter === 'ALL' || k === currentFilter);
-                 stratContainer.innerHTML = filteredState.map(([sym, s]) => `
+          // Strategy
+          const stratContainer = document.getElementById("strategy-content");
+          const state = data.strategy_state || {};
+          const filteredState = Object.entries(state).filter(
+            ([k, v]) => currentFilter === "ALL" || k === currentFilter
+          );
+          stratContainer.innerHTML = filteredState
+            .map(
+              ([sym, s]) => `
                     <div style="background:rgba(255,255,255,0.02); padding:10px; border-radius:8px; margin-bottom:8px;">
                         <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
                             <span style="font-weight:600; color:var(--primary)">${sym}</span>
-                            <span style="font-size:0.75rem; opacity:0.7">${s.regime||'UNK'}</span>
+                            <span style="font-size:0.75rem; opacity:0.7">${
+                              s.regime || "UNK"
+                            }</span>
                         </div>
                         <div class="strategy__grid">
-                            <div class="strategy__tile"><span class="strategy__tile-label">VOL</span><span>${((s.volatility||0)*10000).toFixed(0)}</span></div>
-                            <div class="strategy__tile"><span class="strategy__tile-label">KAPPA</span><span>${(s.kappa||0).toFixed(2)}</span></div>
+                            <div class="strategy__tile"><span class="strategy__tile-label">VOL</span><span>${(
+                              (s.volatility || 0) * 10000
+                            ).toFixed(0)}</span></div>
+                            <div class="strategy__tile"><span class="strategy__tile-label">KAPPA</span><span>${(
+                              s.kappa || 0
+                            ).toFixed(2)}</span></div>
                         </div>
                     </div>
-                 `).join('');
+                 `
+            )
+            .join("");
 
-                 // Risk
-                 const riskContainer = document.getElementById('risk-content');
-                 let totalVal = 0;
-                 let riskHtml = '';
-                 Object.entries(inv).forEach(([sym, info]) => {
-                      const val = Math.abs(info.qty * info.entry);
-                      totalVal += val;
-                      const pct = Math.min((val/500)*100, 100);
-                      riskHtml += `
+          // Risk
+          const riskContainer = document.getElementById("risk-content");
+          let totalVal = 0;
+          let riskHtml = "";
+          
+          // Dynamic Limits
+          const limitPerSymbol = window.appConfig?.RISK_MAX_POSITION_PER_SYMBOL_USD || 500;
+          const limitTotal = window.appConfig?.RISK_MAX_POSITION_TOTAL_USD || 1500;
+
+          Object.entries(inv).forEach(([sym, info]) => {
+            const val = Math.abs(info.qty * info.entry);
+            totalVal += val;
+            const pct = Math.min((val / limitPerSymbol) * 100, 100);
+            riskHtml += `
                         <div style="margin-bottom:12px">
                             <div style="display:flex; justify-content:space-between; font-size:0.8rem; margin-bottom:4px;">
                                 <span>${sym}</span>
-                                <span>$${val.toFixed(0)} / $500</span>
+                                <span>$${val.toFixed(0)} / $${limitPerSymbol}</span>
                             </div>
-                            <div class="risk-bar"><div class="risk-fill ${pct>80?'danger':(pct>50?'warning':'')}" style="width:${pct}%"></div></div>
+                            <div class="risk-bar"><div class="risk-fill ${
+                              pct > 80 ? "danger" : pct > 50 ? "warning" : ""
+                            }" style="width:${pct}%"></div></div>
                         </div>
                       `;
-                 });
-                 const totalPct = Math.min((totalVal/1500)*100, 100);
-                 riskContainer.innerHTML = `
+          });
+          const totalPct = Math.min((totalVal / limitTotal) * 100, 100);
+          riskContainer.innerHTML = `
                     <div style="border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:15px; margin-bottom:15px;">
                         <div style="display:flex; justify-content:space-between;">
                             <span>TOTAL EXPOSURE</span>
-                            <span style="color:var(--primary)">$${totalVal.toFixed(0)} / $1500</span>
+                            <span style="color:var(--primary)">$${totalVal.toFixed(
+                              0
+                            )} / $${limitTotal}</span>
                         </div>
-                        <div class="risk-bar" style="height:8px"><div class="risk-fill ${totalPct>80?'danger':''}" style="width:${totalPct}%"></div></div>
+                        <div class="risk-bar" style="height:8px"><div class="risk-fill ${
+                          totalPct > 80 ? "danger" : ""
+                        }" style="width:${totalPct}%"></div></div>
                     </div>
                     ${riskHtml}
                  `;
 
-                 // Latency
-                 const latContainer = document.getElementById('latency-content');
-                 const health = data.system_health || {};
-                 latContainer.innerHTML = Object.entries(health).map(([k,v]) => `
+          // Update exposure bar and skew warning
+          const balance = data.balance || 1;
+          const exposurePct = Math.min((totalVal / balance) * 100, 100);
+          document.getElementById("exposure-pct").innerText = `${exposurePct.toFixed(0)}%`;
+          const exposureBar = document.getElementById("exposure-bar");
+          exposureBar.style.width = `${exposurePct}%`;
+          exposureBar.className = `risk-fill ${exposurePct > 80 ? "danger" : exposurePct > 50 ? "warning" : ""}`;
+          
+          // Inventory skew detection
+          const values = Object.values(inv).map(i => Math.abs(i.qty * i.entry));
+          const maxPos = Math.max(...values, 0);
+          const skewWarning = document.getElementById("skew-warning");
+          if (totalVal > 0 && maxPos / totalVal > 0.6) {
+            skewWarning.style.display = "block";
+          } else {
+            skewWarning.style.display = "none";
+          }
+          
+          // Load fees periodically
+          if (!window.lastFeeLoad || Date.now() - window.lastFeeLoad > 10000) {
+            loadFees();
+            window.lastFeeLoad = Date.now();
+          }
+
+
+          // Latency
+          const latContainer = document.getElementById("latency-content");
+          const health = data.system_health || {};
+          latContainer.innerHTML = Object.entries(health)
+            .map(
+              ([k, v]) => `
                     <div class="list__item">
                         <span>${k.toUpperCase()}</span>
-                        <span class="status-pill status-pill--${v=='OK'?'ok':'error'}">${v}</span>
+                        <span class="status-pill status-pill--${
+                          v == "OK" ? "ok" : "error"
+                        }">${v}</span>
                     </div>
-                 `).join('');
+                 `
+            )
+            .join("");
 
-                 // Trades
-                 const tradesContainer = document.getElementById('trades-list');
-                 const trades = (data.recent_trades || []).filter(t => currentFilter === 'ALL' || t.symbol === currentFilter);
-                 tradesContainer.innerHTML = trades.slice(0,50).map(t => {
-                     const isBuy = t.side === 'BUY';
-                     return `
-                        <div class="list__item" style="border-left: 3px solid ${isBuy ? 'var(--success)' : 'var(--danger)'}">
-                            <div style="display:flex; gap:10px; align-items:center;">
-                                <span class="badge ${isBuy?'badge--buy':'badge--sell'}">${t.side}</span>
-                                <span style="font-weight:600; width:60px;">${t.symbol}</span>
-                            </div>
-                            <span class="${t.pnl>=0?'text-success':'text-danger'}">$${t.pnl.toFixed(4)}</span>
-                        </div>
-                     `;
-                 }).join('');
+          // Trades - Store globally for sorting
+          window.latestTrades = (data.recent_trades || []).filter(
+            (t) => currentFilter === "ALL" || t.symbol === currentFilter
+          );
+          renderTrades();
+          
+          // Update Wins/Losses
+          updateWinRate();
 
-                 // LOGGER
-                 const logContainer = document.getElementById('log-list');
-                 logContainer.innerHTML = (data.logs||[]).map(l => {
-                     let cls = '';
-                     if(l.includes('ERROR')) cls = 'log-line--err';
-                     else if(l.includes('WARNING')) cls = 'log-line--warn';
-                     else if(l.includes('BUY') || l.includes('SELL')) cls = 'log-line--info';
-                     return `<div class="log-line ${cls}"><span>${l}</span></div>`;
-                 }).join('');
+          // LOGGER - REMOVED (Element deleted)
+          
+          // CHART: TradingView Update
+          if (data.equity_curve && data.equity_curve.length > 0 && areaSeries) {
+            // 1. Process Data: Floor time to seconds, handle duplicates
+            const rawData = data.equity_curve.map((d) => ({
+              time: Math.floor(d.time), // UNIX seconds (int)
+              value: d.value !== undefined ? d.value : d.equity, // Handle Key Mismatch (WS=equity, API=value)
+            }));
 
-                 // CHART: TradingView Update
-                 if(data.equity_curve && data.equity_curve.length > 0) {
-                     const seriesData = data.equity_curve.map(d => ({
-                         time: d.time,
-                         value: d.equity
-                     }));
-                     
-                     // Only set data if new (optimization)
-                     const lastData = areaSeries.data().slice(-1)[0];
-                     const lastNew = seriesData.slice(-1)[0];
-                     
-                     if (!lastData || (lastNew.time > lastData.time)) {
-                         areaSeries.setData(seriesData);
-                         chart.timeScale().fitContent();
-                     }
-                 }
+            // 2. Deduplicate: Keep LAST value for each second
+            const uniqueDataMap = new Map();
+            rawData.forEach((item) => {
+              uniqueDataMap.set(item.time, item); // Overwrites earlier entries for same second
+            });
 
-            } catch (e) {
-                console.error(e);
-                document.getElementById('log-list').innerHTML = `<div class="log-line log-line--err">UI ERROR: ${e.message}</div>`;
+            // 3. Convert back to array and sort
+            const seriesData = Array.from(uniqueDataMap.values()).sort(
+              (a, b) => a.time - b.time
+            );
+
+            // 4. Update Chart
+            // Only set data if we have strictly new data or it's the first load
+            const currentData = areaSeries.data();
+            const lastCurrent =
+              currentData.length > 0
+                ? currentData[currentData.length - 1]
+                : null;
+            const lastNew =
+              seriesData.length > 0 ? seriesData[seriesData.length - 1] : null;
+
+            if (
+              !lastCurrent ||
+              (lastNew && lastNew.time > lastCurrent.time) ||
+              currentData.length !== seriesData.length
+            ) {
+              // Store full data for filtering
+              fullEquityData = seriesData;
+              // Apply time range filter
+              updateEquityChart();
             }
+          }
+        } catch (e) {
+          console.error(e);
+          // Removed log-list error reporting since element is gone
         }
-        
-        connect();
+      }
+
+      connect();
+      
+      // Init Globals
+      (async function init() {
+          try {
+              const res = await fetch("/api/config");
+              window.appConfig = await res.json();
+          } catch(e) { console.error("Config init failed", e); }
+      })();
     </script>
-</body>
+  </body>
 </html>

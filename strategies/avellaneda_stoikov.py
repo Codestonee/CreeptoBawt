@@ -13,14 +13,16 @@ import logging
 import time
 import math
 import numpy as np
+import os
+import json
 from collections import deque
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 
 from core.events import MarketEvent, SignalEvent, FillEvent, RegimeEvent, FundingRateEvent
 from strategies.base import BaseStrategy
-from data.shadow_book import ShadowOrderBook
-from data.candle_provider import CandleProvider
+from core.shadow_book import ShadowOrderBook
+from core.candle_provider import CandleProvider
 from config.settings import settings  # Import settings
 from analysis.vpin_calculator import VPINCalculator, VPINState
 from strategies.glt_quote_engine import GLTQuoteEngine, GLTParams
@@ -159,13 +161,7 @@ class AvellanedaStoikovStrategy(BaseStrategy):
         
         # Initialize GLT params for each symbol
         for sym in self.symbols:
-            glt_params = GLTParams(
-                A=getattr(settings, 'GLT_A', 10.0),
-                k=getattr(settings, 'GLT_K', 0.5),
-                gamma=getattr(settings, 'GLT_GAMMA', 0.1),
-                delta=0.001,
-                min_spread_bps=self.MIN_SPREAD_BPS
-            )
+            glt_params = self._get_symbol_glt_params(sym)
             
             self.glt_engine.set_params(
                 sym,
@@ -196,7 +192,8 @@ class AvellanedaStoikovStrategy(BaseStrategy):
                 'inventory': 0.0,
                 'last_mid': 0.0,
                 'volatility': 0.001,  # Initial estimate
-                'kappa': self.DEFAULT_KAPPA,
+                'kappa': settings.AS_KAPPA,
+                'skip_reason': None,
                 'regime': 'UNCERTAIN',
                 'last_quote_time': 0.0,
                 'last_quote_mid': 0.0,
@@ -207,6 +204,7 @@ class AvellanedaStoikovStrategy(BaseStrategy):
                 'vpin': VPINCalculator(sym),  # VPIN toxic flow detector
                 'last_warning_time': 0.0,  # Log rate limiter
                 'latency_history': deque(maxlen=20), # Latency tracking (ms)
+                'trade_pnls': [],  # For gamma adjustment (win rate tracking)
                 # Visualization Data
                 'my_bid': 0.0,
                 'my_ask': 0.0,
@@ -230,6 +228,51 @@ class AvellanedaStoikovStrategy(BaseStrategy):
         # Flag for background tasks
         self._tasks_started = False
     
+    def _get_symbol_glt_params(self, symbol: str) -> GLTParams:
+        """
+        Get tailored GLT parameters based on asset price class.
+        
+        Adjusts 'delta' (trade unit) and 'k' (spread sensitivity) to prevent
+        huge spreads on low-priced assets (like XRP).
+        """
+        s = symbol.lower()
+        
+        # Defaults from settings
+        glt_A = getattr(settings, 'GLT_A', 10.0)
+        glt_gamma = getattr(settings, 'GLT_GAMMA', 0.1)
+        
+        # Tailored Params based on approximate price
+        if 'btc' in s:
+            k = 0.3      # ~$100k
+            delta = 0.001 # $95
+        elif 'eth' in s:
+            k = 10.0     # ~$3k
+            delta = 0.01  # $30
+        elif 'sol' in s or 'bnb' in s or 'bch' in s:
+            k = 100.0    # ~$200-600
+            delta = 0.1   # $20-60
+        elif 'ltc' in s or 'aave' in s:
+            k = 500.0    # ~$70-100
+            delta = 0.1   # $7-10
+        elif 'link' in s or 'uni' in s:
+            k = 2000.0   # ~$10-20
+            delta = 1.0   # $10-20
+        elif 'xrp' in s or 'ada' in s or 'doge' in s or 'matic' in s:
+            k = 15000.0  # ~$0.5-2.0
+            delta = 10.0  # $5-20
+        else:
+            # Conservative default for unknown mid-range assets
+            k = 50.0
+            delta = 0.01
+            
+        return GLTParams(
+            A=glt_A,
+            k=k,
+            gamma=glt_gamma,
+            delta=delta,
+            min_spread_bps=self.MIN_SPREAD_BPS
+        )
+
     # Cooldown period after a fill (seconds) - prevents revenge trading
     FILL_COOLDOWN_SECONDS = 2.0
     
@@ -355,10 +398,12 @@ class AvellanedaStoikovStrategy(BaseStrategy):
         
         # Check fill cooldown (prevent revenge trading)
         if time.time() - state['last_fill_time'] < self.FILL_COOLDOWN_SECONDS:
+            state['skip_reason'] = f"Fill cooldown ({self.FILL_COOLDOWN_SECONDS}s)"
             return  # Wait before quoting again after a fill
         
         # Check if quote refresh needed (hysteresis)
         if not self._should_refresh_quote(symbol, event.price):
+            state['skip_reason'] = "Quote refresh not needed (hysteresis)"
             return
         
         # Check adverse selection filters
@@ -366,18 +411,22 @@ class AvellanedaStoikovStrategy(BaseStrategy):
             if not state['paused']:
                 logger.info(f"[{symbol}] Adverse selection detected - pausing quotes")
                 state['paused'] = True
+            state['skip_reason'] = "Adverse selection detected"
             return
         
         state['paused'] = False
+        state['skip_reason'] = None  # Clear skip reason when quoting
         
         # Staleness check - don't quote on stale order book data
         if self.shadow_book and self.shadow_book.is_stale(symbol, max_age_seconds=2.0):
             logger.warning(f"[{symbol.upper()}] Order book stale - pausing quotes")
+            state['skip_reason'] = "Order book stale (>2s)"
             return
         
         # Warmup check - need enough data for reliable volatility estimate
         if len(state['returns']) < 20:
             logger.debug(f"[{symbol}] Warming up ({len(state['returns'])}/20 samples)")
+            state['skip_reason'] = f"Warming up ({len(state['returns'])}/20)"
             return
         
         # ===================================================================
@@ -482,6 +531,59 @@ class AvellanedaStoikovStrategy(BaseStrategy):
              if int(new_kappa * 10) != int(current_kappa * 10):
                  logger.info(f"[{symbol}] Dynamic Kappa: {current_kappa:.2f} -> {new_kappa:.2f} (Rate: {fill_rate}/min)")
     
+    def _update_gamma(self, symbol: str):
+        """
+        Dynamic Gamma Adjustment based on Win Rate.
+        
+        Logic:
+        - Gamma controls spread width (Higher Gamma = Wider Spreads = Less Adverse Selection).
+        - If Win Rate > 55%: We're capturing spread well -> DECREASE Gamma (Tighter spreads, more volume).
+        - If Win Rate < 45%: We're getting picked off -> INCREASE Gamma (Wider spreads, less adverse selection).
+        
+        Win is defined as: Total PnL from last N round-trips > 0 (includes fees).
+        """
+        state = self._state[symbol]
+        trade_pnls = state.get('trade_pnls', [])
+        
+        # Need at least 20 trades to make a meaningful adjustment
+        if len(trade_pnls) < 20:
+            return
+        
+        # Calculate win rate from last 50 trades
+        recent_pnls = trade_pnls[-50:]
+        wins = sum(1 for pnl in recent_pnls if pnl > 0)
+        win_rate = wins / len(recent_pnls)
+        
+        # Adjustment parameters
+        target_win_rate_high = 0.55  # Above this, we can be more aggressive
+        target_win_rate_low = 0.45   # Below this, we need to widen
+        gamma_step = 0.02            # Adjustment step
+        min_gamma = 0.1              # Floor (can't go too tight)
+        max_gamma = 2.0              # Ceiling (can't go too wide)
+        
+        current_gamma = self.gamma
+        adjustment = 0.0
+        
+        if win_rate > target_win_rate_high:
+            # High win rate -> Decrease gamma (tighter spreads)
+            adjustment = -gamma_step
+        elif win_rate < target_win_rate_low:
+            # Low win rate -> Increase gamma (wider spreads)
+            adjustment = gamma_step
+        
+        # Apply & Clamp
+        new_gamma = max(min_gamma, min(max_gamma, current_gamma + adjustment))
+        
+        if abs(new_gamma - current_gamma) > 0.001:
+            self.gamma = new_gamma
+            settings.AS_GAMMA = new_gamma  # Sync global
+            
+            direction = "↓ TIGHTER" if adjustment < 0 else "↑ WIDER"
+            logger.info(
+                f"[{symbol}] Dynamic Gamma: {current_gamma:.2f} -> {new_gamma:.2f} "
+                f"({direction}, WinRate: {win_rate:.1%})"
+            )
+    
     def _update_persistence(self, symbol: str, state: dict):
         """Update persistent state manager with latest volatile metrics."""
         now = time.time()
@@ -531,9 +633,24 @@ class AvellanedaStoikovStrategy(BaseStrategy):
         state['last_fill_time'] = now  # For cooldown
         self._update_kappa(symbol)
         
+        # Record realized PnL for gamma adjustment (if available in event)
+        realized_pnl = getattr(event, 'realized_pnl', None)
+        if realized_pnl is not None:
+            trade_pnls = state.get('trade_pnls', [])
+            trade_pnls.append(realized_pnl)
+            # Keep only last 100 trades
+            if len(trade_pnls) > 100:
+                state['trade_pnls'] = trade_pnls[-100:]
+            else:
+                state['trade_pnls'] = trade_pnls
+            
+            # Update gamma based on win rate
+            self._update_gamma(symbol)
+        
         logger.info(
             f"[{symbol}] Fill: {event.side} {event.quantity} @ {event.price}, "
             f"Inventory: {state['inventory']:.4f}"
+            + (f", PnL: ${realized_pnl:.4f}" if realized_pnl else "")
         )
     
     async def on_regime_change(self, event: RegimeEvent):
@@ -988,7 +1105,8 @@ class AvellanedaStoikovStrategy(BaseStrategy):
             
         # Smart Rounding for Min Notional
         # We need strictly >= RISK_MIN_NOTIONAL_USD (safe buffer). 
-        target_min_usd = settings.RISK_MIN_NOTIONAL_USD
+        # Using MIN_NOTIONAL_USD (typically $10) gives a good safety margin over the $5 limit.
+        target_min_usd = settings.MIN_NOTIONAL_USD
         min_raw = target_min_usd / price if price > 0 else self.base_quantity
         # Ceiling division to next lot step
         min_qty = math.ceil(min_raw / precision_step) * precision_step
@@ -1031,20 +1149,40 @@ class AvellanedaStoikovStrategy(BaseStrategy):
                 ask_size = 0
                 logger.debug(f"[{symbol}] Inventory limit reached (SHORT ${inventory_usd:.0f}) - ASK disabled")
         
-        # Round to appropriate precision
+        # Round to appropriate precision using CEILING to meet minimum notional
+        # Standard round() can bring values below minimum (0.074 -> 0.07)
+        def ceil_to_precision(value, decimals):
+            if value == 0:
+                return 0
+            multiplier = 10 ** decimals
+            return math.ceil(value * multiplier) / multiplier
+        
         if price > 1000:
-            bid_size = round(bid_size, 3)
-            ask_size = round(ask_size, 3)
-        # Special case for SOL which often rejects decimals if step size is 1
-        elif symbol == 'solusdt':
-            bid_size = int(bid_size)
-            ask_size = int(ask_size)
+            bid_size = ceil_to_precision(bid_size, 3)
+            ask_size = ceil_to_precision(ask_size, 3)
         elif price > 10:
-            bid_size = round(bid_size, 2)
-            ask_size = round(ask_size, 2)
+            bid_size = ceil_to_precision(bid_size, 2)
+            ask_size = ceil_to_precision(ask_size, 2)
+        elif price > 1:
+            bid_size = ceil_to_precision(bid_size, 1)
+            ask_size = ceil_to_precision(ask_size, 1)
         else:
-            bid_size = round(bid_size, 1)
-            ask_size = round(ask_size, 1)
+            # For very cheap coins like DOGE, use whole numbers
+            bid_size = math.ceil(bid_size)
+            ask_size = math.ceil(ask_size)
+        
+        # ========== CRITICAL FIX: CAP SELL SIZE TO ACTUAL INVENTORY ==========
+        # Prevent "insufficient balance" errors by only selling what we have
+        if inventory > 0:
+            # We're long - cap ask_size to what we actually own
+            # Leave 5% buffer for rounding/precision issues
+            max_sellable = inventory * 0.95
+            if ask_size > max_sellable:
+                ask_size = max_sellable
+                logger.debug(f"[{symbol}] Ask size capped to inventory: {ask_size:.4f}")
+        else:
+            # We're flat or short - can't sell what we don't have (in spot mode)
+            ask_size = 0
         
         return bid_size, ask_size
     
@@ -1155,6 +1293,16 @@ class AvellanedaStoikovStrategy(BaseStrategy):
         bid_str = f"BID {quote.bid_size}@${quote.bid_price:,.2f}" if quote.bid_size > 0 else "---"
         ask_str = f"ASK {quote.ask_size}@${quote.ask_price:,.2f}" if quote.ask_size > 0 else "---"
         logger.info(f"📊 {sym}: {bid_str} | {ask_str}")
+        
+        # 0. CANCEL EXISTING (Cancel-Replace Logic)
+        # We emit a special CANCEL signal to wipe old orders for this symbol
+        cancel_signal = SignalEvent(
+            symbol=quote.symbol,
+            side='CANCEL',
+            quantity=0.0,
+            strategy_id='avellaneda_stoikov'
+        )
+        await self.queue.put(cancel_signal)
         
         # Submit bid
         if quote.bid_size > 0:

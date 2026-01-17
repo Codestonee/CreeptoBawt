@@ -81,7 +81,7 @@ class EventStore:
                 payload TEXT NOT NULL,
                 pre_state TEXT,
                 post_state TEXT,
-                created_at REAL DEFAULT (unixepoch('now', 'subsec'))
+                created_at REAL DEFAULT (strftime('%s', 'now'))
             )
         ''')
         

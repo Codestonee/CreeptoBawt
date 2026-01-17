@@ -14,7 +14,7 @@ from execution.simulated import MockExecutionHandler
 from execution.binance_executor import BinanceExecutionHandler
 # from execution.okx_executor import OkxExecutionHandler # Deprecated
 from execution.ccxt_executor import CCXTExecutor
-from data.candle_provider import CandleProvider
+from core.candle_provider import CandleProvider
 import time
 
 # Load environment variables
@@ -63,7 +63,11 @@ class TradingEngine:
             
             for ex in active_exchanges:
                 if ex == 'binance':
-                    self.executors['binance'] = BinanceExecutionHandler(self.event_queue, self.risk_manager)
+                    self.executors['binance'] = BinanceExecutionHandler(
+                        self.event_queue, 
+                        self.risk_manager,
+                        testnet=self.testnet # Fix: Pass testnet flag
+                    )
             
             # Initialize MultiExchangeManager for all other exchanges (OKX, MEXC, Coinbase, etc)
             from execution.exchange_manager import MultiExchangeManager
@@ -252,6 +256,9 @@ class TradingEngine:
             elif not paused:
                 self._pause_logged = False
             
+            # Check Dashboard Signals (Cancel/Close/etc)
+            await self._check_dashboard_signals()
+            
             # =====================================================================
             # CRITICAL FIX: Circuit Breaker Monitoring
             # =====================================================================
@@ -385,22 +392,31 @@ class TradingEngine:
             # BUILD position list for risk calculation
             positions = []
             for executor in self.executors.values():
-                # Try to get positions from OrderManager or PositionTracker
-                if hasattr(executor, 'order_manager') and hasattr(executor.order_manager, 'positions'):
-                    for symbol, pos in executor.order_manager.positions.items():
+                # Prefer PositionTracker (Single Source of Truth)
+                if hasattr(executor, 'position_tracker') and executor.position_tracker:
+                     # Access internal cache directly for speed (Risk calculation needs to be fast)
+                     # Note: This reads from the cache, which is updated atomically.
+                     for symbol, pos in executor.position_tracker._positions.items():
+                         if abs(pos.quantity) > 0:
+                            positions.append(PortfolioPosition(
+                                symbol=symbol,
+                                size=pos.quantity,
+                                mark_price=event.price if event.symbol == symbol else pos.avg_entry_price, # Approx if no mark
+                                unrealized_pnl=pos.unrealized_pnl
+                            ))
+                
+                # Fallback to OrderManager if no Tracker (Legacy)
+                elif hasattr(executor, 'order_manager') and hasattr(executor.order_manager, 'positions'):
+                    # Access public property if it exists, or private if we must
+                    pos_map = getattr(executor.order_manager, 'positions', {})
+                    if not pos_map and hasattr(executor.order_manager, '_positions'):
+                        pos_map = executor.order_manager._positions
+                        
+                    for symbol, pos in pos_map.items():
                         positions.append(PortfolioPosition(
                             symbol=symbol,
                             size=pos.quantity,
-                            mark_price=event.price if event.symbol == symbol else pos.mark_price,
-                            unrealized_pnl=pos.unrealized_pnl
-                        ))
-                elif hasattr(executor, 'position_tracker') and executor.position_tracker:
-                   # Fallback to position tracker directly if exposed
-                   for symbol, pos in executor.position_tracker.positions.items():
-                        positions.append(PortfolioPosition(
-                            symbol=symbol,
-                            size=pos.quantity,
-                            mark_price=event.price if event.symbol == symbol else pos.mark_price,
+                            mark_price=event.price if event.symbol == symbol else pos.avg_entry_price,
                             unrealized_pnl=pos.unrealized_pnl
                         ))
 
@@ -434,8 +450,8 @@ class TradingEngine:
         """Handle buy/sell signals from strategies."""
         symbol = event.symbol.upper()
         
-        # Validate via Risk Manager
-        if self.risk_manager:
+        # Validate via Risk Manager (Skip CANCEL signals)
+        if self.risk_manager and event.side.upper() != 'CANCEL':
             if not self.risk_manager.validate_signal(event):
                 logger.warning(f"REJECTED: {event.side} {event.quantity} {symbol}")
                 return
@@ -449,7 +465,10 @@ class TradingEngine:
         executor = self.executors.get(target_exchange.lower())
         
         if executor:
-            logger.info(f"{event.side} {event.quantity} {symbol} @ ${event.price:,.2f} -> {target_exchange}")
+            # Skip logging for CANCEL signals (no price)
+            if event.side.upper() != 'CANCEL':
+                price_str = f"${event.price:,.2f}" if event.price else "MARKET"
+                logger.info(f"{event.side} {event.quantity} {symbol} @ {price_str} -> {target_exchange}")
             await executor.execute(event)
         else:
             logger.error(f"No executor for: {target_exchange}")
@@ -462,6 +481,23 @@ class TradingEngine:
         for strategy in self.strategies:
             if hasattr(strategy, 'on_fill'):
                 await strategy.on_fill(event)
+
+    async def _handle_funding_rate(self, event: FundingRateEvent):
+        """Handle funding rate updates."""
+        # Throttle logging to once per minute per symbol
+        if not hasattr(self, '_funding_log_times'):
+            self._funding_log_times = {}
+        
+        import time
+        now = time.time()
+        last_log = self._funding_log_times.get(event.symbol, 0)
+        if now - last_log > 60:  # Log at most once per minute
+            logger.debug(f"Funding Rate: {event.symbol} {event.rate:.6f}")
+            self._funding_log_times[event.symbol] = now
+        
+        for strategy in self.strategies:
+            if hasattr(strategy, 'on_funding_rate'):
+                await strategy.on_funding_rate(event)
 
     async def _handle_regime_change(self, event: RegimeEvent):
         """Handle market regime changes (Trend vs Range)."""
@@ -490,8 +526,59 @@ class TradingEngine:
         
         logger.info("Engine stopped.")
 
-            if hasattr(strategy, 'on_funding_rate'):
-                await strategy.on_funding_rate(event)
+    async def _check_dashboard_signals(self):
+        """
+        Check for control signals from dashboard (Cancel/Close/etc).
+        Files are created in data/ directory by server.py.
+        """
+        try:
+            data_dir = "data"
+            if not os.path.exists(data_dir):
+                return
+
+            # 1. CANCEL ALL ORDERS
+            if os.path.exists(os.path.join(data_dir, "CANCEL_ALL_ORDERS")):
+                logger.warning("🚨 SIGNAL: CANCEL ALL ORDERS")
+                for executor in self.executors.values():
+                    if hasattr(executor, 'cancel_all_orders'):
+                        await executor.cancel_all_orders()
+                try:
+                    os.remove(os.path.join(data_dir, "CANCEL_ALL_ORDERS"))
+                except: pass
+
+            # 2. SCAN FOR SPECIFIC SIGNALS
+            # We look for files starting with CLOSE_ or CANCEL_ORDER_
+            for filename in os.listdir(data_dir):
+                
+                # CLOSE POSITION: data/CLOSE_BTCUSDT
+                if filename.startswith("CLOSE_"):
+                    symbol = filename.replace("CLOSE_", "")
+                    logger.warning(f"🚨 SIGNAL: CLOSE POSITION {symbol}")
+                    
+                    # Route to correct executor
+                    for executor in self.executors.values():
+                        if hasattr(executor, 'close_position'):
+                            await executor.close_position(symbol)
+                            
+                    try:
+                        os.remove(os.path.join(data_dir, filename))
+                    except: pass
+
+                # CANCEL SINGLE ORDER: data/CANCEL_ORDER_c_12345
+                elif filename.startswith("CANCEL_ORDER_"):
+                    order_id = filename.replace("CANCEL_ORDER_", "")
+                    logger.warning(f"🚨 SIGNAL: CANCEL ORDER {order_id}")
+                    
+                    for executor in self.executors.values():
+                        if hasattr(executor, 'cancel_order'):
+                            await executor.cancel_order(order_id)
+                            
+                    try:
+                        os.remove(os.path.join(data_dir, filename))
+                    except: pass
+                    
+        except Exception as e:
+            logger.error(f"Error checking dashboard signals: {e}")
 
     async def _watchdog_loop(self):
         """Monitor for stuck states and alive heartbeat."""
@@ -508,7 +595,8 @@ class TradingEngine:
             # 2. Check for stuck orders
             for executor in self.executors.values():
                 if hasattr(executor, 'order_manager'):
-                    stuck = executor.order_manager.get_stuck_orders(timeout_seconds=300)
+                    # CRITICAL FIX: Ensure we await the async method
+                    stuck = await executor.order_manager.get_stuck_orders(timeout_seconds=300)
                     if stuck:
                         logger.warning(f"Found {len(stuck)} stuck orders - auto-canceling")
                         for order_id in stuck:

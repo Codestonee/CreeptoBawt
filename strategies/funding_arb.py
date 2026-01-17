@@ -41,14 +41,15 @@ class FundingArbStrategy(BaseStrategy):
         self.mid_prices: Dict[str, float] = {}
         
         # Access OrderManager to check open positions/orders if needed
-        self.order_manager = get_order_manager()
+        # self.order_manager = get_order_manager() # MOVED: Lazy load or remove to prevent startup crash
         
     async def on_tick(self, event: MarketEvent):
         """Track mid-prices for sizing."""
-        if not event.order_book:
-            return
+        if event.bid and event.ask:
+            mid = (event.bid + event.ask) / 2
+        else:
+            mid = event.price
             
-        mid = (event.order_book.bids[0].price + event.order_book.asks[0].price) / 2
         self.mid_prices[event.symbol] = mid
         
         # Check exit conditions if we have active positions
@@ -63,7 +64,7 @@ class FundingArbStrategy(BaseStrategy):
         self.funding_rates[event.symbol] = event.rate
         
         rate_bps = event.rate * 10000
-        logger.info(f"Funding Update {event.symbol}: {rate_bps:.2f} bps ({event.rate:.4%})")
+        logger.debug(f"Funding Update {event.symbol}: {rate_bps:.2f} bps ({event.rate:.4%})")
         
         await self._check_entry(event.symbol, event.rate)
         

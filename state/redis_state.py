@@ -186,6 +186,8 @@ class RedisStateManager:
         """
         Save order to Redis Hash with automatic active queue tracking.
         
+        Uses pipelining to batch all operations in a single round-trip.
+        
         Args:
             order: OrderRecord to persist
         """
@@ -195,25 +197,30 @@ class RedisStateManager:
         
         if self.is_connected:
             try:
-                # Save to hash
-                await self._redis.hset(order_key, mapping={
-                    k: json.dumps(v) if isinstance(v, (dict, list)) else str(v)
-                    for k, v in order_data.items()
-                })
-                
-                # Add to active set if not terminal
-                if order.status not in ['FILLED', 'CANCELED', 'REJECTED', 'EXPIRED']:
-                    await self._redis.zadd(
-                        self.ACTIVE_ORDERS_KEY,
-                        {order.client_order_id: order.created_at}
-                    )
-                else:
-                    # Remove from active if terminal
-                    await self._redis.zrem(self.ACTIVE_ORDERS_KEY, order.client_order_id)
-                
-                # Set TTL for old filled orders (cleanup after 24h)
-                if order.status in ['FILLED', 'CANCELED']:
-                    await self._redis.expire(order_key, 86400)
+                # Use pipeline for all operations in single round-trip
+                async with self._redis.pipeline() as pipe:
+                    # 1. Save to hash
+                    pipe.hset(order_key, mapping={
+                        k: json.dumps(v) if isinstance(v, (dict, list)) else str(v)
+                        for k, v in order_data.items()
+                    })
+                    
+                    # 2. Update active set
+                    if order.status not in ['FILLED', 'CANCELED', 'REJECTED', 'EXPIRED']:
+                        pipe.zadd(
+                            self.ACTIVE_ORDERS_KEY,
+                            {order.client_order_id: order.created_at}
+                        )
+                    else:
+                        # Remove from active if terminal
+                        pipe.zrem(self.ACTIVE_ORDERS_KEY, order.client_order_id)
+                    
+                    # 3. Set TTL for old filled orders (cleanup after 24h)
+                    if order.status in ['FILLED', 'CANCELED']:
+                        pipe.expire(order_key, 86400)
+                    
+                    # Execute all commands atomically
+                    await pipe.execute()
                 
             except Exception as e:
                 logger.error(f"Failed to save order to Redis: {e}")
@@ -259,7 +266,7 @@ class RedisStateManager:
     
     async def get_active_orders(self) -> List[OrderRecord]:
         """
-        Get all active (non-terminal) orders.
+        Get all active (non-terminal) orders using pipeline for performance.
         
         Returns:
             List of active OrderRecords
@@ -271,10 +278,39 @@ class RedisStateManager:
                 # Get all active order IDs from sorted set
                 order_ids = await self._redis.zrange(self.ACTIVE_ORDERS_KEY, 0, -1)
                 
-                for order_id in order_ids:
-                    order = await self.get_order(order_id)
-                    if order:
+                if not order_ids:
+                    return []
+                
+                # Use pipeline to fetch all orders in one round-trip
+                async with self._redis.pipeline() as pipe:
+                    for order_id in order_ids:
+                        order_key = f"{self.ORDER_PREFIX}{order_id}"
+                        pipe.hgetall(order_key)
+                    
+                    results = await pipe.execute()
+                
+                # Parse results
+                for data in results:
+                    if not data:
+                        continue
+                        
+                    try:
+                        order = OrderRecord(
+                            client_order_id=data.get('client_order_id', ''),
+                            symbol=data.get('symbol', ''),
+                            side=data.get('side', ''),
+                            quantity=float(data.get('quantity', 0)),
+                            price=float(data.get('price', 0)),
+                            status=data.get('status', 'UNKNOWN'),
+                            exchange_order_id=data.get('exchange_order_id'),
+                            filled_qty=float(data.get('filled_qty', 0)),
+                            avg_fill_price=float(data.get('avg_fill_price', 0)),
+                            created_at=float(data.get('created_at', 0)),
+                            updated_at=float(data.get('updated_at', 0))
+                        )
                         orders.append(order)
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Failed to parse order data: {e}")
                         
             except Exception as e:
                 logger.error(f"Failed to get active orders from Redis: {e}")

@@ -98,62 +98,122 @@ class PositionTracker:
         Returns:
             True if sync successful, False otherwise
         """
-        logger.info("🔄 Force syncing positions with exchange...")
+        # Import settings here to avoid circular imports? Or assume passed in.
+        from config.settings import settings
+        
+        if hasattr(self.exchange, 'futures_account') or settings.SPOT_MODE:
+            # Only log detailed force sync start at DEBUG level to avoid spam
+            logger.debug("🔄 Force syncing positions with exchange...")
+        else:
+            logger.debug("🔄 Force syncing positions with exchange...")
         
         try:
             # Get positions (Adapter for Binance vs Mock)
-            if hasattr(self.exchange, 'futures_account'):  # Binance AsyncClient
-                # We need account info for balances but position info for specific positions
-                # futures_position_information returns list of all positions
-                raw_positions = await self.exchange.futures_position_information()
+            if hasattr(self.exchange, 'futures_account') or settings.SPOT_MODE:  # Binance Client
                 
-                # Map to generic format
                 exchange_positions = []
-                for p in raw_positions:
-                    amt = float(p['positionAmt'])
-                    if abs(amt) > 0.0:  # Use non-zero check if desired, but here we process all
-                        exchange_positions.append({
-                            'symbol': p['symbol'],
-                            'quantity': amt,
-                            'avgPrice': float(p['entryPrice']),
-                            'unrealizedPnl': float(p['unRealizedProfit'])
-                        })
+                
+                if settings.SPOT_MODE:
+                    # SPOT MODE: Use get_account() -> balances
+                    # Access client directly if needed or assume adapter has method
+                    # binance_executor.py passes 'client' which is AsyncClient
+                    
+                    # Spot doesn't give us "Average Entry Price" or "Unrealized PnL"
+                    # We have to infer or keep local, but for sync we just take quantity.
+                    # Price will be 0 or current price if we fetch ticker (expensive).
+                    # We'll set avgPrice to 0 and let Reconciler or Portfolio update it?
+                    # Or better: Keep local avgPrice if valid, else 0.
+                    
+                    account_info = await self.exchange.get_account()
+                    balances = account_info['balances']
+                    
+                    for b in balances:
+                        asset = b['asset']
+                        free = float(b['free'])
+                        locked = float(b['locked'])
+                        total = free + locked
+                        
+                        if total > 0:
+                            # Convert Asset to Symbol (e.g. BTC -> BTCUSDT)
+                            # This is tricky without knowing all pairs. 
+                            # We assume Quote is USDT for simplicity in this version.
+                            if asset == 'USDT': continue # Don't track USDT as a position
+                            
+                            symbol = f"{asset}USDT"
+                            
+                            # Valid symbol check? We'll assume it's valid if we hold it.
+                            # For precision, we should filter by TRADING_SYMBOLS if available.
+                            
+                            exchange_positions.append({
+                                'symbol': symbol,
+                                'quantity': total,
+                                'avgPrice': 0.0, # Spot doesn't track this
+                                'unrealizedPnl': 0.0 # Spot doesn't track this
+                            })
+                            
+                else:
+                    # FUTURES MODE
+                    # futures_position_information returns list of all positions
+                    raw_positions = await self.exchange.futures_position_information()
+                    
+                    # Map to generic format
+                    for p in raw_positions:
+                        amt = float(p['positionAmt'])
+                        if abs(amt) > 0.0:  # Use non-zero check if desired, but here we process all
+                            exchange_positions.append({
+                                'symbol': p['symbol'],
+                                'quantity': amt,
+                                'avgPrice': float(p['entryPrice']),
+                                'unrealizedPnl': float(p['unRealizedProfit'])
+                            })
             else:
                 # Mock / Standard Interface
                 exchange_positions = await self.exchange.get_positions()
             
+                if not exchange_positions:
+                     exchange_positions = []
+
             async with self._positions_lock:
                 synced_count = 0
                 mismatch_count = 0
                 
-                # Parse exchange positions
+                # Parse exchange positions (Use Normalized Data)
                 exchange_positions_map = {}
-                for p in raw_positions:
+                for p in exchange_positions:
+                    # Normalized keys from above (symbol, quantity, avgPrice, unrealizedPnl)
                     symbol = p['symbol'].lower()
-                    qty = float(p.get('positionAmt', 0))
+                    qty = float(p['quantity'])
                     
                     # Only track non-zero positions
                     if abs(qty) > 0.0001:
                         exchange_positions_map[symbol] = {
                             'symbol': symbol,
                             'quantity': qty,
-                            'avgPrice': float(p.get('entryPrice', 0)),
-                            'unrealizedPnl': float(p.get('unrealizedProfit', 0)),
-                            'leverage': int(p.get('leverage', 1)),
-                            'marginType': p.get('marginType', 'cross')
+                            'avgPrice': float(p['avgPrice']),
+                            'unrealizedPnl': float(p['unrealizedPnl']),
+                            'leverage': 1, # Default/Ignored
+                            'marginType': 'cross' # Default
                         }
                 
-                # Get all symbols we have locally
+                # ... (Rest of logic uses exchange_positions_map) ...
+
+                # 1. Update/Create positions from exchange
                 local_symbols = set(self._positions.keys())
                 exchange_symbols = set(exchange_positions_map.keys())
-                
-                # 1. Update/Create positions from exchange
+
                 for symbol, exch_data in exchange_positions_map.items():
                     exch_qty = exch_data['quantity']
                     exch_price = exch_data['avgPrice']
                     exch_pnl = exch_data['unrealizedPnl']
                     
                     local_pos = self._positions.get(symbol)
+                    
+                    # Versioning: If we are updating/overwriting, we should increment version?
+                    # Since this is a FORCE SYNC, we represent the absolute truth.
+                    # If we blindly overwrite, any in-flight orders might have stale versions.
+                    # But since trading should be halted/paused during full sync, it's safer.
+                    
+                    current_version = local_pos.version if local_pos else 0
                     
                     if local_pos:
                         # Check for mismatch
@@ -163,6 +223,12 @@ class PositionTracker:
                                 f"Local={local_pos.quantity:.4f}, Exchange={exch_qty:.4f}"
                             )
                             mismatch_count += 1
+                        
+                        # CRITICAL FIX FOR SPOT MODE:
+                        # Binance Spot API returns 0.0 for avgPrice. We must preserve our local 
+                        # weighted average price to track PnL, unless we have no local data.
+                        if settings.SPOT_MODE and exch_price == 0.0 and abs(local_pos.avg_entry_price) > 0:
+                            exch_price = local_pos.avg_entry_price
                     
                     # Exchange is source of truth - overwrite local
                     self._positions[symbol] = Position(
@@ -171,10 +237,13 @@ class PositionTracker:
                         avg_entry_price=exch_price,
                         unrealized_pnl=exch_pnl,
                         last_update=datetime.now(),
-                        exchange_confirmed=True
+                        exchange_confirmed=True,
+                        version=current_version + 1 # Increment atomic version
                     )
                     synced_count += 1
                 
+                # ... (Phantom removal logic remains) ...
+
                 # 2. Remove phantom positions (local but not on exchange)
                 phantom_symbols = local_symbols - exchange_symbols
                 for symbol in phantom_symbols:
@@ -196,10 +265,17 @@ class PositionTracker:
                 # Save to database (async, don't block)
                 asyncio.create_task(self._save_to_db())
                 
-                logger.info(
-                    f"✅ Position sync complete: {synced_count} positions synced, "
-                    f"{mismatch_count} discrepancies resolved"
-                )
+                # Only log as INFO if something actually happened
+                if synced_count > 0 or mismatch_count > 0:
+                    logger.info(
+                        f"✅ Position sync complete: {synced_count} positions synced, "
+                        f"{mismatch_count} discrepancies resolved"
+                    )
+                else:
+                    logger.debug(
+                        f"✅ Position sync complete: {synced_count} positions synced, "
+                        f"{mismatch_count} discrepancies resolved"
+                    )
                 
                 # Log current positions for visibility
                 if self._positions:
@@ -212,18 +288,10 @@ class PositionTracker:
                 return True
                 
         except Exception as e:
-            logger.error(f"❌ Position sync failed: {e}", exc_info=True)
+            logger.error(f"Force sync failed: {e}", exc_info=True)
             self._sync_failures += 1
-            self._is_synced = False
-            
-            if self._sync_failures >= self._max_sync_failures:
-                logger.critical(
-                    f"❌ CRITICAL: Position sync failed {self._sync_failures} times - "
-                    "TRADING MUST BE HALTED"
-                )
-            
             return False
-    
+
     async def get_position(self, symbol: str) -> Optional[Position]:
         """
         Get current position for a symbol.
@@ -251,12 +319,6 @@ class PositionTracker:
     ) -> None:
         """
         Update position after a fill.
-        
-        Args:
-            symbol: Trading pair
-            quantity_delta: Change in quantity (positive for buy, negative for sell)
-            price: Fill price
-            commission: Trading commission
         """
         symbol = symbol.lower()
         
@@ -294,6 +356,7 @@ class PositionTracker:
                     current_pos.avg_entry_price = new_avg_price
                     current_pos.last_update = datetime.now()
                     current_pos.exchange_confirmed = False
+                    current_pos.version += 1 # CRITICAL: Increment version
                     
                     logger.info(
                         f"📊 POSITION UPDATE: {symbol} {old_qty:.4f} -> {new_qty:.4f} "
@@ -317,8 +380,18 @@ class PositionTracker:
         """
         Force update a single position from exchange data (Absolute update).
         """
+        from config.settings import settings
+        
         symbol = symbol.lower()
         async with self._positions_lock:
+            current = self._positions.get(symbol)
+            version = (current.version + 1) if current else 1
+            
+            # CRITICAL FIX FOR SPOT MODE:
+            # Binance Spot doesn't provide entry price. Preserve our local price.
+            if settings.SPOT_MODE and entry_price == 0.0 and current and abs(current.avg_entry_price) > 0:
+                entry_price = current.avg_entry_price
+
             if abs(quantity) > 0.001:
                 self._positions[symbol] = Position(
                     symbol=symbol,
@@ -326,7 +399,8 @@ class PositionTracker:
                     avg_entry_price=entry_price,
                     unrealized_pnl=unrealized_pnl,
                     last_update=datetime.now(),
-                    exchange_confirmed=True
+                    exchange_confirmed=True,
+                    version=version # Increment version
                 )
                 logger.info(f"📊 FORCE UPDATE: {symbol} = {quantity:.4f} @ ${entry_price:.4f}")
             else:
@@ -403,7 +477,7 @@ class PositionTracker:
             try:
                 await asyncio.sleep(self._reconciliation_interval)
                 
-                logger.info("🔄 Running scheduled position reconciliation...")
+                logger.debug("🔄 Running scheduled position reconciliation...")
                 success = await self.force_sync_with_exchange()
                 
                 if not success:

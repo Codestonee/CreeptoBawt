@@ -155,3 +155,152 @@ def get_telegram_alerter() -> TelegramAlerter:
 async def send_telegram_alert(message: str) -> bool:
     """Quick way to send a Telegram alert."""
     return await get_telegram_alerter().send(message)
+
+
+class TelegramCommandHandler:
+    """
+    Telegram command handler for remote bot control.
+    
+    Supports commands:
+    - /stop: Create STOP_SIGNAL file to halt trading
+    - /pause: Create PAUSE_SIGNAL file to pause trading
+    - /resume: Remove signal files to resume trading
+    - /status: Get current bot status
+    
+    Usage:
+        handler = TelegramCommandHandler()
+        asyncio.create_task(handler.start_polling())
+    """
+    
+    GET_UPDATES_URL = "https://api.telegram.org/bot{token}/getUpdates"
+    STOP_SIGNAL_FILE = "data/STOP_SIGNAL"
+    PAUSE_SIGNAL_FILE = "data/PAUSE_SIGNAL"
+    
+    def __init__(self, token: Optional[str] = None, chat_id: Optional[str] = None):
+        self.token = token or getattr(settings, 'TELEGRAM_BOT_TOKEN', None)
+        self.chat_id = chat_id or getattr(settings, 'TELEGRAM_CHAT_ID', None)
+        self.enabled = bool(self.token and self.chat_id)
+        self.alerter = TelegramAlerter(self.token, self.chat_id)
+        self.last_update_id = 0
+        self._running = False
+        
+        if self.enabled:
+            logger.info("✅ Telegram command handler enabled")
+    
+    async def start_polling(self, poll_interval: float = 2.0):
+        """Start polling for commands in background."""
+        if not self.enabled:
+            logger.debug("Telegram commands disabled - no token configured")
+            return
+            
+        self._running = True
+        logger.info("🎧 Starting Telegram command listener...")
+        
+        while self._running:
+            try:
+                await self._poll_updates()
+            except Exception as e:
+                logger.warning(f"Telegram poll error: {e}")
+            await asyncio.sleep(poll_interval)
+    
+    def stop(self):
+        """Stop the polling loop."""
+        self._running = False
+    
+    async def _poll_updates(self):
+        """Poll for new Telegram messages."""
+        url = self.GET_UPDATES_URL.format(token=self.token)
+        params = {"offset": self.last_update_id + 1, "timeout": 1}
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, timeout=5) as response:
+                    if response.status != 200:
+                        return
+                    
+                    data = await response.json()
+                    if not data.get("ok"):
+                        return
+                    
+                    for update in data.get("result", []):
+                        self.last_update_id = update["update_id"]
+                        message = update.get("message", {})
+                        text = message.get("text", "")
+                        chat_id = str(message.get("chat", {}).get("id", ""))
+                        
+                        # Only process commands from authorized chat
+                        if chat_id == self.chat_id:
+                            await self._handle_command(text)
+        except asyncio.TimeoutError:
+            pass
+    
+    async def _handle_command(self, text: str):
+        """Handle incoming command."""
+        text = text.strip().lower()
+        
+        if text == "/stop":
+            await self._cmd_stop()
+        elif text == "/pause":
+            await self._cmd_pause()
+        elif text == "/resume":
+            await self._cmd_resume()
+        elif text == "/status":
+            await self._cmd_status()
+    
+    async def _cmd_stop(self):
+        """Handle /stop command - halt trading completely."""
+        import os
+        from datetime import datetime
+        
+        with open(self.STOP_SIGNAL_FILE, "w") as f:
+            f.write(f"STOP:{datetime.now().isoformat()}")
+        
+        await self.alerter.send("🛑 <b>STOP COMMAND RECEIVED</b>\n\nTrading halted. Send /resume to restart.")
+        logger.warning("📱 STOP command received via Telegram")
+    
+    async def _cmd_pause(self):
+        """Handle /pause command - pause trading temporarily."""
+        import os
+        from datetime import datetime
+        
+        with open(self.PAUSE_SIGNAL_FILE, "w") as f:
+            f.write(f"PAUSE:{datetime.now().isoformat()}")
+        
+        await self.alerter.send("⏸️ <b>PAUSE COMMAND RECEIVED</b>\n\nTrading paused. Send /resume to continue.")
+        logger.info("📱 PAUSE command received via Telegram")
+    
+    async def _cmd_resume(self):
+        """Handle /resume command - resume trading."""
+        import os
+        
+        for f in [self.STOP_SIGNAL_FILE, self.PAUSE_SIGNAL_FILE]:
+            if os.path.exists(f):
+                os.remove(f)
+        
+        await self.alerter.send("▶️ <b>RESUME COMMAND RECEIVED</b>\n\nTrading resumed.")
+        logger.info("📱 RESUME command received via Telegram")
+    
+    async def _cmd_status(self):
+        """Handle /status command - report current status."""
+        import os
+        
+        if os.path.exists(self.STOP_SIGNAL_FILE):
+            status = "🛑 STOPPED"
+        elif os.path.exists(self.PAUSE_SIGNAL_FILE):
+            status = "⏸️ PAUSED"
+        else:
+            status = "✅ ACTIVE"
+        
+        await self.alerter.send(f"📊 <b>BOT STATUS</b>\n\nStatus: {status}")
+
+
+# Global command handler instance
+_command_handler: Optional[TelegramCommandHandler] = None
+
+
+def get_telegram_command_handler() -> TelegramCommandHandler:
+    """Get or create the global Telegram command handler."""
+    global _command_handler
+    if _command_handler is None:
+        _command_handler = TelegramCommandHandler()
+    return _command_handler

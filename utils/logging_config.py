@@ -65,13 +65,22 @@ class NoiseFilter(logging.Filter):
 
         return True
 
+from logging.handlers import QueueHandler, QueueListener
+import queue
+import atexit
+
+# Global listener reference to prevent GC
+_log_listener = None
+
 def setup_logging(log_level: str = "INFO"):
     """
-    Setup centralized logging configuration.
+    Setup centralized logging configuration with non-blocking QueueHandler.
     
     Args:
         log_level: Default log level (DEBUG, INFO, etc)
     """
+    global _log_listener
+    
     # Create logs directory if it doesn't exist
     os.makedirs("logs", exist_ok=True)
     
@@ -79,19 +88,21 @@ def setup_logging(log_level: str = "INFO"):
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.DEBUG)  # Capture all, handlers will filter by level
     
-    # Remove existing handlers to avoid duplicates
+    # Remove existing handlers
     if root_logger.hasHandlers():
         root_logger.handlers.clear()
+
+    # --- Actual Handlers (running in separate thread) ---
+    handlers = []
 
     # 1. Console Handler (Clean, INFO+)
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(getattr(logging, log_level.upper()))
     console_handler.setFormatter(CleanFormatter())
     console_handler.addFilter(NoiseFilter())
-    root_logger.addHandler(console_handler)
+    handlers.append(console_handler)
 
     # 2. File Handler (Detailed, DEBUG)
-    # Using simple FileHandler to avoid Windows permissions issues with rotation
     file_handler = logging.FileHandler(
         "logs/bot_execution.log", 
         encoding='utf-8', 
@@ -101,36 +112,45 @@ def setup_logging(log_level: str = "INFO"):
     file_handler.setFormatter(logging.Formatter(
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     ))
-    root_logger.addHandler(file_handler)
+    handlers.append(file_handler)
 
     # 3. Dashboard Handler (Condensed, INFO)
     dashboard_handler = logging.FileHandler(
         "logs/dashboard_log.txt", 
         encoding='utf-8',
-        mode='w' # Overwrite on restart for clean dash
+        mode='w'
     )
     dashboard_handler.setLevel(logging.INFO)
     dashboard_handler.setFormatter(logging.Formatter(
         '%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S'
     ))
-    root_logger.addHandler(dashboard_handler)
+    handlers.append(dashboard_handler)
+
+    # --- Queue Setup ---
+    log_queue = queue.Queue(-1) # Infinite queue
+    queue_handler = QueueHandler(log_queue)
+    root_logger.addHandler(queue_handler)
+
+    # Start Listener (Thread)
+    if _log_listener:
+        _log_listener.stop()
+        
+    _log_listener = QueueListener(log_queue, *handlers, respect_handler_level=True)
+    _log_listener.start()
+    
+    # Register shutdown hook
+    atexit.register(_log_listener.stop)
 
     # 4. Quiet down noisy libraries
     noisy_modules = [
-        'asyncio', 
-        'aiosqlite', 
-        'urllib3', 
-        'websockets',
-        'Execution.Reconciliation', 
-        'Data.ShadowBook', 
-        'Data.CandleProvider', 
-        'Utils.TimeSync', 
-        'Utils.NonceService', 
-        'Core.EventStore',
-        'Analysis.VPIN' # VPIN warmup logs
+        'asyncio', 'aiosqlite', 'urllib3', 'websockets',
+        'Execution.Reconciliation', 'Data.ShadowBook', 
+        'Data.CandleProvider', 'Utils.TimeSync', 
+        'Utils.NonceService', 'Core.EventStore',
+        'Analysis.VPIN'
     ]
     
     for module in noisy_modules:
         logging.getLogger(module).setLevel(logging.WARNING)
         
-    logging.getLogger("Main").info("✅ Logging system initialized")
+    logging.getLogger("Main").info("✅ Logging system initialized (Non-blocking)")

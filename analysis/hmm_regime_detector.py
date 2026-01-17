@@ -110,7 +110,7 @@ class HMMRegimeDetector:
         self._regime_flip_times: deque = deque(maxlen=10)
         self._max_flips_per_minute: int = 5
         
-        logger.info(f"HMMRegimeDetector initialized: n_states={self.config.n_states}")
+        logger.debug(f"HMMRegimeDetector initialized: n_states={self.config.n_states}")
     
     def start(self) -> None:
         """Start background retrainer process."""
@@ -135,7 +135,7 @@ class HMMRegimeDetector:
             daemon=True
         )
         self._retrainer_process.start()
-        logger.info("HMM background retrainer started")
+        logger.debug("HMM background retrainer started")
     
     def stop(self) -> None:
         """Stop background retrainer process."""
@@ -146,7 +146,7 @@ class HMMRegimeDetector:
             if self._retrainer_process.is_alive():
                 self._retrainer_process.terminate()
             self._retrainer_process = None
-        logger.info("HMM background retrainer stopped")
+        logger.debug("HMM background retrainer stopped")
     
     def update(self, log_return: float, volatility: float, volume_ratio: float) -> None:
         """
