@@ -1017,7 +1017,8 @@ class AvellanedaStoikovStrategy(BaseStrategy):
             bid_price = 0.01
 
         # 4. ADJUST SIZES (Legacy Skew + Min Notional)
-        bid_size, ask_size = self._calculate_sizes(symbol, q, true_mid)
+        # CRITICAL: Pass actual bid/ask prices so min_qty is calculated correctly per side
+        bid_size, ask_size = self._calculate_sizes(symbol, q, bid_price, ask_price)
         
         # 5. ENFORCE INVENTORY LIMITS - skip sides that would increase position
         if skip_bid:
@@ -1059,17 +1060,28 @@ class AvellanedaStoikovStrategy(BaseStrategy):
     TANH_LAMBDA = 2.5
     TANH_AGGRESSION = 0.5  # How much skew affects size (0.5 = up to 50% adjustment)
     
-    def _calculate_sizes(self, symbol: str, inventory: float, price: float) -> Tuple[float, float]:
-        """Calculate bid/ask sizes with tanh inventory skew and min notional enforcement."""
+    def _calculate_sizes(self, symbol: str, inventory: float, bid_price: float, ask_price: float) -> Tuple[float, float]:
+        """
+        Calculate bid/ask sizes with tanh inventory skew and min notional enforcement.
         
-        # Calculate minimum quantity to meet MIN_NOTIONAL_USD
-        min_qty = self.MIN_NOTIONAL_USD / price if price > 0 else self.base_quantity
+        CRITICAL FIX: Uses actual bid/ask prices for min_qty calculation, not mid price.
+        This ensures order value meets minimum when placed at the actual order price.
+        """
+        # Use average for general calculations, but per-side prices for min_qty
+        avg_price = (bid_price + ask_price) / 2 if bid_price > 0 and ask_price > 0 else max(bid_price, ask_price)
         
-        # Use the larger of base_quantity or min_qty
-        base = max(self.base_quantity, min_qty)
+        # ========== CRITICAL FIX: Calculate min_qty PER SIDE using actual order price ==========
+        # Add 10% safety buffer to account for any price movement between calculation and validation
+        SAFETY_BUFFER = 1.10
+        target_min_usd = settings.RISK_MIN_NOTIONAL_USD * SAFETY_BUFFER  # Use RISK value with buffer
+        
+        # Minimum quantity for BID (buy) - use bid_price since that's the order price
+        min_bid_qty = target_min_usd / bid_price if bid_price > 0 else self.base_quantity
+        # Minimum quantity for ASK (sell) - use ask_price since that's the order price  
+        min_ask_qty = target_min_usd / ask_price if ask_price > 0 else self.base_quantity
         
         # Check for Inventory Excess (Emergency Unwind Sizing)
-        inventory_usd = abs(inventory * price)
+        inventory_usd = abs(inventory * avg_price)
         max_position_usd = settings.MAX_POSITION_USD
         excess_ratio = inventory_usd / max_position_usd if max_position_usd > 0 else 0
         
@@ -1079,49 +1091,28 @@ class AvellanedaStoikovStrategy(BaseStrategy):
             excess_usd = inventory_usd - max_position_usd
             # Target clearing 10% of the excess per trade, or at least $50 USD
             target_unwind_usd = max(excess_usd * 0.10, 50.0) 
-            unwind_qty = target_unwind_usd / price if price > 0 else 0
+            unwind_qty = target_unwind_usd / avg_price if avg_price > 0 else 0
             
             # Cap unwind size to avoid market impact (e.g. max $500 per clip)
             max_clip_usd = 500.0
             if target_unwind_usd > max_clip_usd:
-                unwind_qty = max_clip_usd / price
+                unwind_qty = max_clip_usd / avg_price
                 
             logger.info(f"[{symbol}] Emergency Unwind Active (Excess ${excess_usd:.0f}). Boosting size to {unwind_qty:.4f}")
-
+        
         # Determine Precision / Lot Size Steps
-        # Heuristic based on price bucket (should ideally come from exchange info)
-        # TODO: Get actual precision from ExchangeManager
-        if price > 1000:
-            precision_step = 0.001 
-        elif price > 10:
-            precision_step = 0.01 
-        else:
-            precision_step = 1.0 if not symbol.endswith('usdt') else 0.1 # Fallback
-            
-        # FIX: Remove hardcoded 'solusdt' check which was dangerous
-        # Sol tick size is 0.01 or 0.001 usually, not 1.0! 
-        # For now, consistent small steps are safer (exchange will round it)
-        precision_step = 0.001 # Safe default for most crypto
-            
-        # Smart Rounding for Min Notional
-        # We need strictly >= RISK_MIN_NOTIONAL_USD (safe buffer). 
-        # Using MIN_NOTIONAL_USD (typically $10) gives a good safety margin over the $5 limit.
-        target_min_usd = settings.MIN_NOTIONAL_USD
-        min_raw = target_min_usd / price if price > 0 else self.base_quantity
-        # Ceiling division to next lot step
-        min_qty = math.ceil(min_raw / precision_step) * precision_step
+        precision_step = 0.001  # Safe default for most crypto
         
-        # Calculate Base Size (Larger of config base or min_notional)
-        base = max(self.base_quantity, min_qty)
+        # Ceiling round min_qty to precision step
+        min_bid_qty = math.ceil(min_bid_qty / precision_step) * precision_step
+        min_ask_qty = math.ceil(min_ask_qty / precision_step) * precision_step
         
-        # Round the base to precision (it should be already, but to be safe)
+        # Calculate Base Size (use average min for skew calculation)
+        base = max(self.base_quantity, min_bid_qty, min_ask_qty)
         base = math.ceil(base / precision_step) * precision_step
         
         # ========== TANH-BASED SKEW (replaces linear) ==========
-        # Dynamic MAX units based on USD limit
-        max_units = settings.MAX_POSITION_USD / price if price > 0 else 10.0
-        
-        # Tanh skew provides stronger pressure at extremes
+        max_units = settings.MAX_POSITION_USD / avg_price if avg_price > 0 else 10.0
         skew = inventory_skew_tanh(inventory, max_units, self.TANH_LAMBDA)
         
         bid_size = base * (1 - skew * 0.5)  # Reduce when long
@@ -1129,14 +1120,14 @@ class AvellanedaStoikovStrategy(BaseStrategy):
         
         # BOOST UNWIND SIDE
         if excess_ratio > 1.1:
-            if inventory > 0: # Long -> Boost Ask
+            if inventory > 0:  # Long -> Boost Ask
                 ask_size = max(ask_size, unwind_qty)
             else:             # Short -> Boost Bid
                 bid_size = max(bid_size, unwind_qty)
         
-        # Ensure minimum notional is met
-        bid_size = max(bid_size, min_qty)
-        ask_size = max(ask_size, min_qty)
+        # ========== CRITICAL: Ensure minimum notional is met PER SIDE ==========
+        bid_size = max(bid_size, min_bid_qty)
+        ask_size = max(ask_size, min_ask_qty)
         
         # HARD INVENTORY LIMIT: Disable one side when position too large
         if inventory_usd > max_position_usd:
@@ -1157,13 +1148,13 @@ class AvellanedaStoikovStrategy(BaseStrategy):
             multiplier = 10 ** decimals
             return math.ceil(value * multiplier) / multiplier
         
-        if price > 1000:
+        if avg_price > 1000:
             bid_size = ceil_to_precision(bid_size, 3)
             ask_size = ceil_to_precision(ask_size, 3)
-        elif price > 10:
+        elif avg_price > 10:
             bid_size = ceil_to_precision(bid_size, 2)
             ask_size = ceil_to_precision(ask_size, 2)
-        elif price > 1:
+        elif avg_price > 1:
             bid_size = ceil_to_precision(bid_size, 1)
             ask_size = ceil_to_precision(ask_size, 1)
         else:
