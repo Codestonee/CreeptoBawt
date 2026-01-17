@@ -204,12 +204,30 @@ class RiskGatekeeper:
         Check position limits using atomic snapshot.
         Version parameter ensures position hasn't changed during validation.
         """
+        # =====================================================================
+        # CRITICAL FIX: SPOT MODE - Cannot short without holdings
+        # =====================================================================
+        if settings.SPOT_MODE and side == 'SELL':
+            if current_qty <= 0:
+                return RiskCheckResult(
+                    False, 
+                    f"Spot cannot short: {symbol} has no holdings to sell",
+                    "CRITICAL"
+                )
+            # Also check if trying to sell more than we have
+            if quantity > current_qty:
+                return RiskCheckResult(
+                    False,
+                    f"Spot cannot sell {quantity:.4f} - only have {current_qty:.4f}",
+                    "WARNING"
+                )
+        
         # Calculate projected position EXACTLY once with snapshot
         new_value = 0.0
         
         if side == 'BUY':
             if current_qty < 0:
-                # Closing short
+                # Closing short (only possible in futures)
                 if quantity <= abs(current_qty):
                     return RiskCheckResult(True, "Closing short - OK", "INFO")
                 remaining_long = quantity - abs(current_qty)
@@ -222,10 +240,12 @@ class RiskGatekeeper:
                 # Closing long
                 if quantity <= current_qty:
                     return RiskCheckResult(True, "Closing long - OK", "INFO")
+                # In spot mode, we already blocked selling more than we have above
+                # This branch would only be reached in futures mode
                 remaining_short = quantity - current_qty
                 new_value = remaining_short * price
             else:
-                # Adding to short
+                # Adding to short (only in futures mode - spot blocked above)
                 new_value = current_val + order_value
         
         # Check limit

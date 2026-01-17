@@ -508,6 +508,14 @@ class OrderManager:
         
         # 5. Log Trade to DB (CRITICAL FIX: Ensure dashboard sees this)
         # We manually construct the dict to bypass event object requirement of log_trade
+        # FIX: Dynamic commission asset based on symbol's quote currency
+        if order.symbol.lower().endswith('usdc'):
+            commission_asset = 'USDC'
+        elif order.symbol.lower().endswith('usdt'):
+            commission_asset = 'USDT'
+        else:
+            commission_asset = order.symbol[-4:].upper()  # Extract last 4 chars as quote
+        
         trade_record = {
             'type': 'trade',
             'timestamp': time.time(),
@@ -516,7 +524,7 @@ class OrderManager:
             'quantity': filled_qty,
             'price': fill_price,
             'commission': commission,
-            'commission_asset': 'USDT',
+            'commission_asset': commission_asset,
             'is_maker': False,
             'pnl': pnl,
             'strategy_id': 'execution'

@@ -30,8 +30,17 @@ class CCXTExecutor:
             'apiKey': api_key,
             'secret': api_secret,
             'enableRateLimit': True,
-            'options': {'defaultType': 'future'} # Default to futures (perps)
+            # FIX: Use spot or futures based on SPOT_MODE setting
+            'options': {'defaultType': 'spot' if self._check_spot_mode() else 'future'}
         }
+    
+    def _check_spot_mode(self):
+        """Check if running in spot mode."""
+        try:
+            from config.settings import settings
+            return settings.SPOT_MODE
+        except:
+            return False
         
         if password: # Required for OKX
             self.config['password'] = password

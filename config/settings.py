@@ -65,9 +65,9 @@ class Settings(BaseSettings):
 
     # Strategy Config
     # Avellaneda-Stoikov Parameters
-    AS_GAMMA: float = 0.5            # Risk aversion
-    AS_KAPPA: float = 0.5            # Inventory aversion
-    MIN_PROFIT_PER_TRADE_USD: float = 0.05  # Minimum profit target per trade
+    AS_GAMMA: float = 0.1            # Reduced from 0.5 (Tighter spreads)
+    AS_KAPPA: float = 0.3            # Reduced from 0.5 (Less inventory averse)
+    MIN_PROFIT_PER_TRADE_USD: float = 0.005  # Reduced from 0.05 (Allows tightly priced small orders)
     ESTIMATED_FEE_BPS: float = 7.0   # Estimated taker fee in basis points
 
     # --------------------------------------------------------------------------
@@ -110,7 +110,7 @@ class Settings(BaseSettings):
     # Fee Structure
     MAKER_FEE_BPS: float = 2.0       # 0.02% maker fee
     TAKER_FEE_BPS: float = 5.0       # 0.05% taker fee
-    MIN_PROFIT_BPS: float = 10.0     # Minimum profit margin after fees
+    MIN_PROFIT_BPS: float = 5.0      # Reduced from 10.0 (Tighter floor)
     
     # GLT (Guéant-Lehalle-Tapia) Parameters
     GLT_GAMMA: float = 0.3          # Risk aversion

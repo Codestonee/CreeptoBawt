@@ -282,7 +282,9 @@ class BinanceExecutionHandler:
             last_filled_qty = float(data['l'])
             last_filled_price = float(data['L'])
             commission = float(data.get('n', 0))
-            commission_asset = data.get('N', 'USDT')
+            # FIX: Default to USDC for spot mode, USDT for futures
+            default_commission_asset = 'USDC' if self.spot_mode else 'USDT'
+            commission_asset = data.get('N', default_commission_asset)
             is_maker = data.get('m', False) # m=True means Maker side
             
             logger.info(f"⚡ FILL: {side} {last_filled_qty} {symbol} @ {last_filled_price}")
@@ -730,13 +732,21 @@ class BinanceExecutionHandler:
             quantity = self._round_step_size(quantity, step_size)
             
             if order_type == "MARKET":
-                result = await self.client.futures_create_order(
-                    symbol=symbol.upper(),
-                    side=side.upper(),
-                    type='MARKET',
-                    quantity=quantity,
-                    recvWindow=self.nonce_service.get_recv_window()
-                )
+                if self.spot_mode:
+                    result = await self.client.create_order(
+                        symbol=symbol.upper(),
+                        side=side.upper(),
+                        type='MARKET',
+                        quantity=quantity
+                    )
+                else:
+                    result = await self.client.futures_create_order(
+                        symbol=symbol.upper(),
+                        side=side.upper(),
+                        type='MARKET',
+                        quantity=quantity,
+                        recvWindow=self.nonce_service.get_recv_window()
+                    )
             else:  # LIMIT order
                 price = self._round_step_size(price, tick_size)
                 
@@ -763,20 +773,32 @@ class BinanceExecutionHandler:
                             filled_quantity=0.0
                         )
                 
-                # Submit to exchange
+                # Submit to exchange - use correct API based on mode
                 kwargs = {'recvWindow': self.nonce_service.get_recv_window()}
                 if client_order_id:
                     kwargs['newClientOrderId'] = client_order_id
                 
-                result = await self.client.futures_create_order(
-                    symbol=symbol.upper(),
-                    side=side.upper(),
-                    type='LIMIT',
-                    timeInForce='GTX',  # Post-only
-                    quantity=quantity,
-                    price=str(price),
-                    **kwargs
-                )
+                if self.spot_mode:
+                    # SPOT: Use create_order with LIMIT_MAKER for post-only
+                    result = await self.client.create_order(
+                        symbol=symbol.upper(),
+                        side=side.upper(),
+                        type='LIMIT_MAKER',  # Spot equivalent of GTX (post-only)
+                        quantity=quantity,
+                        price=str(price),
+                        newClientOrderId=client_order_id if client_order_id else None
+                    )
+                else:
+                    # FUTURES: Use futures_create_order with GTX
+                    result = await self.client.futures_create_order(
+                        symbol=symbol.upper(),
+                        side=side.upper(),
+                        type='LIMIT',
+                        timeInForce='GTX',  # Post-only
+                        quantity=quantity,
+                        price=str(price),
+                        **kwargs
+                    )
                 
                 exchange_order_id = str(result.get('orderId', ''))
                 
@@ -804,11 +826,17 @@ class BinanceExecutionHandler:
     async def _router_cancel_order(self, symbol: str, order_id: str) -> bool:
         """Cancel order for router."""
         try:
-            # Use origClientOrderId for clientOrderId-based orders
-            await self.client.futures_cancel_order(
-                symbol=symbol.upper(),
-                origClientOrderId=order_id
-            )
+            # Use correct cancel method based on mode
+            if self.spot_mode:
+                await self.client.cancel_order(
+                    symbol=symbol.upper(),
+                    origClientOrderId=order_id
+                )
+            else:
+                await self.client.futures_cancel_order(
+                    symbol=symbol.upper(),
+                    origClientOrderId=order_id
+                )
             return True
         except Exception as e:
             logger.debug(f"[{symbol}] Cancel failed: {e}")

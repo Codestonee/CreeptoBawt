@@ -41,8 +41,16 @@ class TimeSyncService:
     CRITICAL_DRIFT_MS = 3000        # Pause trading if > 3000ms
     SYNC_INTERVAL_SECONDS = 60
     
-    def __init__(self, exchange_time_url: str = "https://fapi.binance.com/fapi/v1/time"):
-        self.exchange_time_url = exchange_time_url
+    def __init__(self, exchange_time_url: str = None, spot_mode: bool = False):
+        # FIX: Use correct time endpoint based on mode
+        if exchange_time_url:
+            self.exchange_time_url = exchange_time_url
+        elif spot_mode:
+            self.exchange_time_url = "https://api.binance.com/api/v3/time"  # Spot
+        else:
+            self.exchange_time_url = "https://fapi.binance.com/fapi/v1/time"  # Futures
+        
+        self.spot_mode = spot_mode
         self._offset_ms: int = 0
         self._last_sync: float = 0
         self._is_synced: bool = False
@@ -210,17 +218,29 @@ class TimeSyncService:
         )
 
 
-# Testnet URL for development
-BINANCE_TESTNET_TIME_URL = "https://testnet.binancefuture.com/fapi/v1/time"
+# Testnet URLs for development
+BINANCE_TESTNET_TIME_URL_FUTURES = "https://testnet.binancefuture.com/fapi/v1/time"
+BINANCE_TESTNET_TIME_URL_SPOT = "https://testnet.binance.vision/api/v3/time"
 
 # Global instance
 _time_sync: Optional[TimeSyncService] = None
 
 
-def get_time_sync_service(testnet: bool = True) -> TimeSyncService:
+def get_time_sync_service(testnet: bool = True, spot_mode: bool = False) -> TimeSyncService:
     """Get or create the global time sync service."""
     global _time_sync
     if _time_sync is None:
-        url = BINANCE_TESTNET_TIME_URL if testnet else "https://fapi.binance.com/fapi/v1/time"
-        _time_sync = TimeSyncService(url)
+        from config.settings import settings
+        spot_mode = settings.SPOT_MODE
+        
+        if testnet:
+            url = BINANCE_TESTNET_TIME_URL_SPOT if spot_mode else BINANCE_TESTNET_TIME_URL_FUTURES
+        else:
+            # Mainnet URLs
+            if spot_mode:
+                url = "https://api.binance.com/api/v3/time"
+            else:
+                url = "https://fapi.binance.com/fapi/v1/time"
+        
+        _time_sync = TimeSyncService(url, spot_mode=spot_mode)
     return _time_sync

@@ -109,19 +109,23 @@ class ShadowBookService:
     def __init__(self, symbols: List[str], testnet: bool = True):
         self.symbols = [s.lower() for s in symbols]
         self.testnet = testnet
-        if testnet:
-            self.ws_url = "wss://fstream.binancefuture.com/ws"  # Testnet URL (NOTE: Check config!)
-            # But the settings.py has "wss://fstream.binance.com/ws" as default for MAINNET?
-            # Wait, user's invalid request showed [MM] logs, implying live trading? 
-            # Or testnet? "Order book stale" means bot is running.
-            # I should prefer passing URL or using settings.
-            pass
-        else:
-            self.ws_url = "wss://fstream.binance.com/ws"
-            
-        # Hardcoding URL for now based on settings reference in main.py
+        
+        # FIX: Use correct WebSocket URL based on SPOT_MODE
         from config.settings import settings
-        self.ws_url = settings.BINANCE_WS_URL
+        if settings.SPOT_MODE:
+            # Spot WebSocket URL (Combined Streams)
+            if testnet:
+                self.ws_url = "wss://testnet.binance.vision/stream"
+            else:
+                self.ws_url = "wss://stream.binance.com:9443/stream"
+            logger.info(f"ShadowBook configured for SPOT mode (Combined): {self.ws_url}")
+        else:
+            # Futures WebSocket URL
+            if testnet:
+                self.ws_url = "wss://fstream.binancefuture.com/ws"
+            else:
+                self.ws_url = settings.BINANCE_WS_URL  # wss://fstream.binance.com/ws
+            logger.info(f"ShadowBook configured for FUTURES mode: {self.ws_url}")
             
         self.books: Dict[str, ShadowOrderBook] = {
             s: ShadowOrderBook(s) for s in self.symbols
@@ -219,18 +223,42 @@ class ShadowBookService:
             if msg.type == aiohttp.WSMsgType.TEXT:
                 try:
                     receive_time = time.time()
-                    data = json_loads(msg.data)
+                    raw_data = json_loads(msg.data)
                     
-                    # Handle Depth Update
-                    # Event type is 'depthUpdate' for both diff and partial stream on Futures
-                    if data.get('e') == 'depthUpdate':
+                    # Handle Subscription Response
+                    if 'result' in raw_data and 'id' in raw_data:
+                         logger.info(f"ShadowBook subscription confirmed: {raw_data}")
+                         continue
+                         
+                    # Normalize Data (Handle Combined Streams vs Raw)
+                    stream_name = raw_data.get('stream', '')
+                    data = raw_data.get('data', raw_data)
+                    
+                    symbol = ""
+                    is_depth = False
+                    
+                    # Case 1: Combined Stream (Spot)
+                    if stream_name:
+                        # stream_name format: 'ltcusdc@depth20@100ms'
+                        symbol = stream_name.split('@')[0].lower()
+                        is_depth = True # Combined streams are what we subscribed to
+                        
+                    # Case 2: Futures Raw Stream (has 'e' and 's')
+                    elif data.get('e') == 'depthUpdate':
                         symbol = data.get('s', '').lower()
+                        is_depth = True
+                        
+                    if is_depth and symbol:
                         book = self.books.get(symbol)
                         if book:
                             book.update_from_snapshot(data)
                             
-                            # Track latency (time from exchange event to our processing)
-                            event_time = data.get('E', 0)  # Exchange event time in ms
+                            # Track latency
+                            event_time = data.get('E', 0)
+                            if event_time == 0 and 'lastUpdateId' in data:
+                                # Spot partial depth doesn't have E (event time), use receive time
+                                event_time = receive_time * 1000
+                                
                             if event_time:
                                 latency_ms = (receive_time * 1000) - event_time
                                 self._last_update_latencies.append(latency_ms)

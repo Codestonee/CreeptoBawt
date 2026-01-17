@@ -635,15 +635,27 @@ class ReconciliationService:
                     
                     if self.spot_mode:
                         # SPOT: Parse 'balances' -> positions
+                        from config.settings import settings
                         positions = {}
                         for b in data.get('balances', []):
                             asset = b['asset']
-                            # Ignore specific assets if needed, or map to symbols
                             total = float(b['free']) + float(b['locked'])
-                            if total > 0 and asset != 'USDT':
-                                # Approximation: assume matches symbol + USDT
-                                # Ideally we'd scan all symbols or filter relevant ones
-                                symbol = f"{asset}USDT"
+                            
+                            # Skip quote assets
+                            if total > 0 and asset not in ['USDT', 'USDC', 'USD', 'BUSD']:
+                                # FIX: Match against configured TRADING_SYMBOLS
+                                found_symbol = None
+                                for trade_sym in settings.TRADING_SYMBOLS:
+                                    if trade_sym.upper().startswith(asset):
+                                        found_symbol = trade_sym.upper()
+                                        break
+                                
+                                if found_symbol:
+                                    symbol = found_symbol
+                                else:
+                                    # Fallback to USDC for spot mode
+                                    symbol = f"{asset}USDC"
+                                
                                 positions[symbol] = {
                                     'symbol': symbol,
                                     'positionAmt': total,

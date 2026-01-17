@@ -67,6 +67,34 @@ class TestAvellanedaStoikovStrategy:
         )
 
     @pytest.fixture(autouse=True)
+    def mock_settings(self):
+        """Mock settings to prevent env-specific failures (e.g. min notional)."""
+        # Patch the settings object instance used in the module
+        with patch('strategies.avellaneda_stoikov.settings') as mock_settings:
+            # Set defaults similar to real settings but with 0 min notional
+            mock_settings.RISK_MIN_NOTIONAL_USD = 0.0
+            mock_settings.AS_GAMMA = 0.5
+            mock_settings.AS_KAPPA = 1.5
+            mock_settings.MAKER_FEE_BPS = 2
+            mock_settings.TAKER_FEE_BPS = 5
+            mock_settings.MIN_PROFIT_BPS = 2
+            mock_settings.MAX_POSITION_USD = 1000.0
+            
+            # ALSO Patch the class attribute which is set at import time
+            with patch.object(AvellanedaStoikovStrategy, 'MIN_NOTIONAL_USD', 0.0):
+                yield mock_settings
+
+    @pytest.fixture(autouse=True)
+    def mock_state_manager(self):
+        """Mock StateManager to avoid background tasks."""
+        # Patch at source because it's imported inside __init__
+        with patch('utils.state_manager.StateManager') as MockSM:
+            mock_sm_instance = MockSM.return_value
+            # Mock the start_auto_save to be an async no-op
+            mock_sm_instance.start_auto_save = AsyncMock(return_value=None)
+            yield MockSM
+
+    @pytest.fixture(autouse=True)
     def mock_order_manager(self):
         """Mock the global OrderManager to prevent RuntimeErrors."""
         with patch('strategies.avellaneda_stoikov.get_order_manager') as mock_get:

@@ -134,15 +134,24 @@ class PositionTracker:
                         total = free + locked
                         
                         if total > 0:
-                            # Convert Asset to Symbol (e.g. BTC -> BTCUSDT)
-                            # This is tricky without knowing all pairs. 
-                            # We assume Quote is USDT for simplicity in this version.
-                            if asset == 'USDT': continue # Don't track USDT as a position
+                            # Skip quote assets (USDT, USDC, USD)
+                            if asset in ['USDT', 'USDC', 'USD', 'BUSD']:
+                                continue
                             
-                            symbol = f"{asset}USDT"
+                            # FIX: Match against configured TRADING_SYMBOLS
+                            # This ensures we track the correct symbols (e.g., LTCUSDC not LTCUSDT)
+                            found_symbol = None
+                            for trade_sym in settings.TRADING_SYMBOLS:
+                                if trade_sym.upper().startswith(asset):
+                                    found_symbol = trade_sym.lower()
+                                    break
                             
-                            # Valid symbol check? We'll assume it's valid if we hold it.
-                            # For precision, we should filter by TRADING_SYMBOLS if available.
+                            if found_symbol:
+                                symbol = found_symbol
+                            else:
+                                # Fallback: Use USDC for spot mode, USDT for futures
+                                quote = 'USDC' if settings.SPOT_MODE else 'USDT'
+                                symbol = f"{asset}{quote}"
                             
                             exchange_positions.append({
                                 'symbol': symbol,

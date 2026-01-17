@@ -1174,6 +1174,16 @@ class AvellanedaStoikovStrategy(BaseStrategy):
         else:
             # We're flat or short - can't sell what we don't have (in spot mode)
             ask_size = 0
+            
+        # ========== FINAL CHECK: Prevent Dust Orders ==========
+        # If inventory cap reduced size below min notional, we must skip to avoid error
+        if bid_size > 0 and (bid_size * bid_price) < settings.RISK_MIN_NOTIONAL_USD:
+            logger.debug(f"[{symbol}] Skipping Dust Bid: ${bid_size * bid_price:.2f} < ${settings.RISK_MIN_NOTIONAL_USD}")
+            bid_size = 0
+            
+        if ask_size > 0 and (ask_size * ask_price) < settings.RISK_MIN_NOTIONAL_USD:
+            logger.debug(f"[{symbol}] Skipping Dust Ask: ${ask_size * ask_price:.2f} < ${settings.RISK_MIN_NOTIONAL_USD}")
+            ask_size = 0
         
         return bid_size, ask_size
     

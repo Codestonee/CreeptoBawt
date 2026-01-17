@@ -438,7 +438,11 @@ async def api_candles(symbol: str, interval: str = "1m", limit: int = 100):
     import aiohttp
     
     symbol = symbol.upper()
-    url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}"
+    # FIX: Use spot or futures API based on SPOT_MODE
+    if settings.SPOT_MODE:
+        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+    else:
+        url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}"
     
     candles = []
     try:
@@ -527,7 +531,11 @@ async def api_orderbook(symbol: str, limit: int = 20):
     import aiohttp
     
     symbol = symbol.upper()
-    url = f"https://fapi.binance.com/fapi/v1/depth?symbol={symbol}&limit={limit}"
+    # FIX: Use spot or futures API based on SPOT_MODE
+    if settings.SPOT_MODE:
+        url = f"https://api.binance.com/api/v3/depth?symbol={symbol}&limit={limit}"
+    else:
+        url = f"https://fapi.binance.com/fapi/v1/depth?symbol={symbol}&limit={limit}"
     
     depth_data = {
         "symbol": symbol,
@@ -594,8 +602,11 @@ async def api_rate_limit():
     }
     
     try:
-        # Make a lightweight request to check rate limits
-        url = "https://fapi.binance.com/fapi/v1/time"
+        # FIX: Use spot or futures API based on SPOT_MODE
+        if settings.SPOT_MODE:
+            url = "https://api.binance.com/api/v3/time"
+        else:
+            url = "https://fapi.binance.com/fapi/v1/time"
         
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=5) as resp:

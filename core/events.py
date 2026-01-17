@@ -61,7 +61,7 @@ class FillEvent(Event):
     quantity: float
     price: float
     commission: float = 0.0
-    commission_asset: str = "USDT"
+    commission_asset: str = ""  # Will be set by caller based on symbol/mode
     is_maker: bool = False # Taker by default
     pnl: float = 0.0  # Realiserad vinst/förlust (om denna trade stänger en position)
 

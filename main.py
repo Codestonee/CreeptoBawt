@@ -176,10 +176,13 @@ def main():
     logger.info("✅ HMM Regime Detector started (background retrainer active)")
 
     # 3. Initialize Connector (Trades/Ticks to Engine)
+    # FIX: Use spot WebSocket URL when in SPOT_MODE
+    ws_url = settings.BINANCE_SPOT_WS_URL if settings.SPOT_MODE else settings.BINANCE_WS_URL
     binance_connector = BinanceFuturesConnector(
         event_queue=engine.event_queue,
         symbols=settings.TRADING_SYMBOLS,
-        ws_url=settings.BINANCE_WS_URL
+        ws_url=ws_url,
+        spot_mode=settings.SPOT_MODE  # Pass spot mode to connector
     )
     engine.add_connector(binance_connector)
 
