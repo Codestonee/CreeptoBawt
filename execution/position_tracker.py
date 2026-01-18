@@ -742,6 +742,28 @@ class PositionTracker:
                         f"{qty} @ ${price} (Trade ID: {trade_id})"
                     )
                     
+                    # ========== CRITICAL FIX: Calculate PnL for recovered trades ==========
+                    # Get current position to check if this trade reduces it
+                    calculated_pnl = 0.0
+                    pos = self._positions.get(symbol.lower())
+                    if pos and pos.avg_entry_price > 0:
+                        # Check if this trade reduces the position
+                        is_reducing = (
+                            (pos.quantity > 0 and side == 'SELL') or
+                            (pos.quantity < 0 and side == 'BUY')
+                        )
+                        if is_reducing:
+                            if pos.quantity > 0:  # Long position being reduced
+                                calculated_pnl = (price - pos.avg_entry_price) * qty
+                            else:  # Short position being reduced
+                                calculated_pnl = (pos.avg_entry_price - price) * qty
+                            calculated_pnl -= commission  # Subtract commission
+                            logger.info(
+                                f"💰 BACKFILL PNL: Entry=${pos.avg_entry_price:.4f} "
+                                f"Exit=${price:.4f} PnL=${calculated_pnl:.4f}"
+                            )
+                    # ======================================================================
+                    
                     # Log to database so Dashboard can see it
                     trade_record = {
                         'type': 'trade',
@@ -754,7 +776,7 @@ class PositionTracker:
                         'commission': commission,
                         'commission_asset': commission_asset,
                         'is_maker': is_maker,
-                        'pnl': 0.0,  # Will be recalculated by PnL engine
+                        'pnl': calculated_pnl,  # Now properly calculated!
                         'strategy_id': 'rest_backfill',
                         'recovered': True
                     }
