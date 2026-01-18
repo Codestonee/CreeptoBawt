@@ -36,26 +36,38 @@ import numpy as np
 
 logger = logging.getLogger("Analysis.HMMRegime")
 
+# Checkpoint path for model persistence
+HMM_CHECKPOINT_PATH = "data/hmm_model.pkl"
+
 
 class MarketRegime(str, Enum):
     """Market regime states."""
-    WARMUP = "WARMUP"              # Not enough observations
+    WARMUP = "WARMUP"                  # Not enough observations
     MEAN_REVERTING = "MEAN_REVERTING"  # Low vol, good for tight spreads
-    TRENDING = "TRENDING"          # Directional, skew against trend
-    VOLATILE = "VOLATILE"          # High vol, widen or pause
+    TRENDING = "TRENDING"              # Directional, skew against trend
+    VOLATILE = "VOLATILE"              # High vol, widen or pause
+    UNCERTAIN = "UNCERTAIN"            # PHASE 2: Low confidence - use moderate spreads
 
 
 @dataclass
 class HMMConfig:
-    """Configuration for HMM regime detector."""
+    """
+    Configuration for HMM regime detector.
+    
+    PHASE 2 Updates:
+    - Faster retraining (15 min instead of 60)
+    - Confidence threshold for UNCERTAIN state
+    - Lower min_observations for quicker startup
+    """
     n_states: int = 3
-    retrain_interval_minutes: int = 60
-    min_observations: int = 200      # Min obs before first prediction
-    warmup_observations: int = 500   # Min obs before first training
-    buffer_size: int = 2000          # ~1.5 days @ 1-min candles
-    hysteresis_count: int = 3        # Confirmations before state change
-    covariance_type: str = "diag"    # Cheaper than full covariance
-    n_iter: int = 50                 # EM iterations per training
+    retrain_interval_minutes: int = 15     # PHASE 2: Faster retraining (was 60)
+    min_observations: int = 100            # PHASE 2: Reduced for quicker startup (was 200)
+    warmup_observations: int = 300         # PHASE 2: Reduced (was 500)
+    buffer_size: int = 2000                # ~1.5 days @ 1-min candles
+    hysteresis_count: int = 3              # Confirmations before state change
+    covariance_type: str = "diag"          # Cheaper than full covariance
+    n_iter: int = 50                       # EM iterations per training
+    confidence_threshold: float = 0.6     # PHASE 2: Below this -> UNCERTAIN
 
 
 class HMMRegimeDetector:
@@ -111,6 +123,67 @@ class HMMRegimeDetector:
         self._max_flips_per_minute: int = 5
         
         logger.debug(f"HMMRegimeDetector initialized: n_states={self.config.n_states}")
+        
+        # Try to load saved model from disk
+        self._load_model_checkpoint()
+    
+    def _save_model_checkpoint(self) -> None:
+        """Save current model to disk for persistence across restarts."""
+        if self._model is None:
+            return
+        
+        try:
+            checkpoint_data = {
+                'model': self._model,
+                'state_map': self._state_map,
+                'timestamp': time.time(),
+                'observation_count': len(self._observation_buffer)
+            }
+            
+            from pathlib import Path
+            checkpoint_path = Path(HMM_CHECKPOINT_PATH)
+            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(checkpoint_path, 'wb') as f:
+                pickle.dump(checkpoint_data, f)
+            
+            logger.info(f"✅ HMM model checkpoint saved to {HMM_CHECKPOINT_PATH}")
+        except Exception as e:
+            logger.warning(f"Failed to save HMM checkpoint: {e}")
+    
+    def _load_model_checkpoint(self) -> bool:
+        """Load model from disk if available. Returns True if loaded."""
+        try:
+            from pathlib import Path
+            checkpoint_path = Path(HMM_CHECKPOINT_PATH)
+            
+            if not checkpoint_path.exists():
+                logger.debug("No HMM checkpoint found, starting fresh")
+                return False
+            
+            with open(checkpoint_path, 'rb') as f:
+                checkpoint_data = pickle.load(f)
+            
+            self._model = checkpoint_data.get('model')
+            if 'state_map' in checkpoint_data:
+                self._state_map = checkpoint_data['state_map']
+            
+            age_hours = (time.time() - checkpoint_data.get('timestamp', 0)) / 3600
+            obs_count = checkpoint_data.get('observation_count', 0)
+            
+            # Skip warmup if we have a valid model
+            if self._model is not None:
+                self._current_regime = MarketRegime.MEAN_REVERTING  # Safe default
+                logger.info(
+                    f"✅ HMM model loaded from checkpoint (age: {age_hours:.1f}h, "
+                    f"trained on {obs_count} observations)"
+                )
+                return True
+            
+            return False
+        except Exception as e:
+            logger.warning(f"Failed to load HMM checkpoint: {e}")
+            return False
     
     def start(self) -> None:
         """Start background retrainer process."""
@@ -216,12 +289,20 @@ class HMMRegimeDetector:
             # Map to regime
             raw_regime = self._state_map.get(regime_idx, MarketRegime.VOLATILE)
             
-            # Apply hysteresis
-            regime = self._apply_hysteresis(raw_regime)
-            
             # Convert log_prob to confidence (0-1 scale, normalized)
             # Higher log_prob = better fit
             confidence = min(1.0, max(0.0, (log_prob + 10) / 10))
+            
+            # PHASE 2: Return UNCERTAIN if confidence is too low
+            if confidence < self.config.confidence_threshold:
+                regime = MarketRegime.UNCERTAIN
+                logger.debug(
+                    f"HMM low confidence ({confidence:.2f} < {self.config.confidence_threshold}) "
+                    f"- Using UNCERTAIN instead of {raw_regime.value}"
+                )
+            else:
+                # Apply hysteresis only for confident predictions
+                regime = self._apply_hysteresis(raw_regime)
             
             self._current_regime = regime
             self._confidence = confidence
@@ -280,6 +361,9 @@ class HMMRegimeDetector:
                             f"HMM STATE MAPPING CHANGED: {old_map} -> {self._state_map}"
                         )
             logger.info("New HMM model received from background retrainer")
+            
+            # Save checkpoint for persistence
+            self._save_model_checkpoint()
         except:
             pass  # No new model
     

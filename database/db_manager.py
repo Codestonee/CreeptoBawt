@@ -205,6 +205,8 @@ class DatabaseManager:
                                 (client_order_id, trace_id, symbol, side, order_type, time_in_force,
                                  quantity, filled_quantity, remainder_quantity, price, state, created_at, updated_at)
                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                ON CONFLICT(client_order_id) DO UPDATE SET
+                                    updated_at = excluded.updated_at
                             ''', (
                                 d['client_order_id'], d['trace_id'], d['symbol'], d['side'],
                                 d['order_type'], d['time_in_force'], d['quantity'],
@@ -297,3 +299,39 @@ class DatabaseManager:
         rows = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return rows
+    
+    async def get_recent_trades(self, symbol: str = None, limit: int = 100):
+        """
+        Get recent trades for deduplication during REST backfill.
+        Returns list of dicts with trade_id, symbol, side, quantity, price.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None, 
+            lambda: self._read_recent_trades_sync(symbol, limit)
+        )
+    
+    def _read_recent_trades_sync(self, symbol: str = None, limit: int = 100):
+        """Synchronous helper for get_recent_trades."""
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=5.0)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            if symbol:
+                cursor.execute(
+                    "SELECT * FROM trades WHERE symbol = ? ORDER BY id DESC LIMIT ?",
+                    (symbol.lower(), limit)
+                )
+            else:
+                cursor.execute(
+                    "SELECT * FROM trades ORDER BY id DESC LIMIT ?",
+                    (limit,)
+                )
+            
+            rows = [dict(row) for row in cursor.fetchall()]
+            conn.close()
+            return rows
+        except Exception as e:
+            logger.warning(f"Failed to read recent trades: {e}")
+            return []

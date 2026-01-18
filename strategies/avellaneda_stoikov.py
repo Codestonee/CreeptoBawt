@@ -114,6 +114,7 @@ class AvellanedaStoikovStrategy(BaseStrategy):
     - Dynamic spread based on volatility and arrival rate
     - Adverse selection filter (pause on volume spikes)
     - Hysteresis to avoid API spam (not fixed timer)
+    - PHASE 2: Regime-aware gamma/kappa optimization
     """
     
     # Configuration
@@ -127,6 +128,37 @@ class AvellanedaStoikovStrategy(BaseStrategy):
     MIN_SPREAD_BPS = (2 * settings.MAKER_FEE_BPS) + (2 * settings.TAKER_FEE_BPS) + settings.MIN_PROFIT_BPS
     # Add 10% buffer to Min Notional to avoid rejections
     MIN_NOTIONAL_USD = settings.MIN_NOTIONAL_USD * 1.1
+    
+    # ======================== PHASE 2: REGIME-AWARE PRESETS ========================
+    # Optimal gamma/kappa ranges per regime (learned from research)
+    REGIME_PARAMS = {
+        'MEAN_REVERTING': {
+            'gamma_min': 0.02, 'gamma_max': 0.08, 'gamma_target': 0.03,
+            'kappa_min': 0.08, 'kappa_max': 0.25, 'kappa_target': 0.12,
+            'description': 'Tight spreads, fast fills - ideal for profit'
+        },
+        'TRENDING': {
+            'gamma_min': 0.08, 'gamma_max': 0.25, 'gamma_target': 0.15,
+            'kappa_min': 0.25, 'kappa_max': 0.60, 'kappa_target': 0.40,
+            'description': 'Wider spreads, conservative - avoid adverse selection'
+        },
+        'VOLATILE': {
+            'gamma_min': 0.15, 'gamma_max': 0.40, 'gamma_target': 0.25,
+            'kappa_min': 0.40, 'kappa_max': 0.80, 'kappa_target': 0.60,
+            'description': 'Widest spreads, most conservative - survive chaos'
+        },
+        'UNCERTAIN': {
+            'gamma_min': 0.05, 'gamma_max': 0.15, 'gamma_target': 0.08,
+            'kappa_min': 0.15, 'kappa_max': 0.40, 'kappa_target': 0.25,
+            'description': 'Moderate spreads - default when unsure'
+        },
+        'WARMUP': {
+            'gamma_min': 0.05, 'gamma_max': 0.15, 'gamma_target': 0.08,
+            'kappa_min': 0.15, 'kappa_max': 0.40, 'kappa_target': 0.25,
+            'description': 'Same as UNCERTAIN during warmup'
+        }
+    }
+    # ===============================================================================
     
     def __init__(
         self,
@@ -205,6 +237,15 @@ class AvellanedaStoikovStrategy(BaseStrategy):
                 'last_warning_time': 0.0,  # Log rate limiter
                 'latency_history': deque(maxlen=20), # Latency tracking (ms)
                 'trade_pnls': [],  # For gamma adjustment (win rate tracking)
+                # PHASE 2: Performance tracking per regime
+                'regime_performance': {
+                    'MEAN_REVERTING': {'trades': 0, 'pnl': 0.0, 'wins': 0},
+                    'TRENDING': {'trades': 0, 'pnl': 0.0, 'wins': 0},
+                    'VOLATILE': {'trades': 0, 'pnl': 0.0, 'wins': 0},
+                    'UNCERTAIN': {'trades': 0, 'pnl': 0.0, 'wins': 0},
+                    'WARMUP': {'trades': 0, 'pnl': 0.0, 'wins': 0}
+                },
+                'last_regime_change': 0.0,  # Timestamp of last regime switch
                 # Visualization Data
                 'my_bid': 0.0,
                 'my_ask': 0.0,
@@ -495,93 +536,160 @@ class AvellanedaStoikovStrategy(BaseStrategy):
         
     def _update_kappa(self, symbol: str):
         """
-        Dynamic Kappa Adjustment (The 'Brain').
+        PHASE 2: Enhanced Dynamic Kappa Adjustment.
         
-        Logic:
-        - Kappa controls risk aversion (Higher Kappa = Wider Spreads = Less Fills).
-        - If Fill Rate > Target: Market is active/we are too tight -> INCREASE Kappa (Slow down).
-        - If Fill Rate < Target: We are missing moves -> DECREASE Kappa (Speed up).
+        Improvements:
+        1. Regime-aware bounds (tighter in mean-reverting, wider in volatile)
+        2. Adaptive step sizing (bigger steps when far from target)
+        3. Performance-weighted: adjust more aggressively if losing money in current regime
         """
         state = self._state[symbol]
         fill_times = state['fill_times']
+        regime = state.get('regime', 'UNCERTAIN')
+        
+        # Get regime-specific bounds
+        regime_config = self.REGIME_PARAMS.get(regime, self.REGIME_PARAMS['UNCERTAIN'])
+        min_kappa = regime_config['kappa_min']
+        max_kappa = regime_config['kappa_max']
+        target_kappa = regime_config['kappa_target']
         
         # 1. Calculate Fill Rate (fills per minute)
         now = time.time()
-        # Remove fills older than 60s from calculation view (but keep in deque for history)
         recent_fills = [t for t in fill_times if now - t <= 60.0]
         fill_rate = len(recent_fills)
         
-        # 2. Adjust Kappa
+        # 2. Calculate fill rate gap from target
+        target_fills = self.target_fills_per_min
+        fill_gap = fill_rate - target_fills  # Positive = too many fills
+        
+        # 3. ADAPTIVE STEP SIZING: Larger steps when far from target
+        base_step = 0.03
+        gap_magnitude = abs(fill_gap) / max(target_fills, 1)  # 0-1 range typically
+        adaptive_step = base_step * (1 + gap_magnitude)  # 0.03 to 0.06 typically
+        adaptive_step = min(adaptive_step, 0.10)  # Cap at 0.10
+        
+        # 4. Performance-weighted: boost adjustment if regime is underperforming
+        regime_perf = state['regime_performance'].get(regime, {})
+        regime_pnl = regime_perf.get('pnl', 0.0)
+        regime_trades = regime_perf.get('trades', 0)
+        
+        if regime_trades >= 10 and regime_pnl < 0:
+            # Losing money in this regime - be more aggressive about adjustment
+            adaptive_step *= 1.5
+            logger.debug(f"[{symbol}] Kappa boost in {regime} (PnL=${regime_pnl:.2f})")
+        
+        # 5. Determine direction
         current_kappa = state['kappa']
         adjustment = 0.0
         
-        if fill_rate > self.target_fills_per_min:
-             # Too many fills -> Increase Kappa (Widen)
-             adjustment = 0.05
-        elif fill_rate < self.target_fills_per_min:
-             # Too few fills -> Decrease Kappa (Tighten)
-             adjustment = -0.05
-             
-        # Apply & Clamp
-        new_kappa = max(self.min_kappa, min(self.max_kappa, current_kappa + adjustment))
+        if fill_rate > target_fills * 1.5:
+            # Way too many fills -> Increase Kappa significantly
+            adjustment = adaptive_step * 1.5
+        elif fill_rate > target_fills:
+            # Too many fills -> Increase Kappa
+            adjustment = adaptive_step
+        elif fill_rate < target_fills * 0.5:
+            # Way too few fills -> Decrease Kappa significantly
+            adjustment = -adaptive_step * 1.5
+        elif fill_rate < target_fills:
+            # Too few fills -> Decrease Kappa
+            adjustment = -adaptive_step
         
-        if abs(new_kappa - current_kappa) > 0.01:
-             state['kappa'] = new_kappa
-             # Log only significant changes (e.g. crossing integer boundaries) to avoid spam
-             if int(new_kappa * 10) != int(current_kappa * 10):
-                 logger.info(f"[{symbol}] Dynamic Kappa: {current_kappa:.2f} -> {new_kappa:.2f} (Rate: {fill_rate}/min)")
+        # 6. Apply with REGIME-SPECIFIC bounds
+        new_kappa = current_kappa + adjustment
+        new_kappa = max(min_kappa, min(max_kappa, new_kappa))
+        
+        if abs(new_kappa - current_kappa) > 0.005:
+            state['kappa'] = new_kappa
+            
+            # Log meaningful changes
+            if int(new_kappa * 10) != int(current_kappa * 10):
+                direction = "↑" if adjustment > 0 else "↓"
+                logger.info(
+                    f"[{symbol}] 🎛️ Kappa {direction}: {current_kappa:.2f} → {new_kappa:.2f} "
+                    f"(Fills: {fill_rate}/min, Regime: {regime})"
+                )
     
     def _update_gamma(self, symbol: str):
         """
-        Dynamic Gamma Adjustment based on Win Rate.
+        PHASE 2: Enhanced Dynamic Gamma Adjustment.
         
-        Logic:
-        - Gamma controls spread width (Higher Gamma = Wider Spreads = Less Adverse Selection).
-        - If Win Rate > 55%: We're capturing spread well -> DECREASE Gamma (Tighter spreads, more volume).
-        - If Win Rate < 45%: We're getting picked off -> INCREASE Gamma (Wider spreads, less adverse selection).
-        
-        Win is defined as: Total PnL from last N round-trips > 0 (includes fees).
+        Improvements:
+        1. Regime-aware bounds (tight in mean-reverting, wide in volatile)
+        2. PnL MAGNITUDE weighting (not just win rate)
+        3. Lower gamma floor (0.02 for ultra-tight spreads)
+        4. Adaptive step sizing based on performance gap
         """
         state = self._state[symbol]
         trade_pnls = state.get('trade_pnls', [])
+        regime = state.get('regime', 'UNCERTAIN')
         
-        # Need at least 20 trades to make a meaningful adjustment
-        if len(trade_pnls) < 20:
+        # Get regime-specific bounds
+        regime_config = self.REGIME_PARAMS.get(regime, self.REGIME_PARAMS['UNCERTAIN'])
+        min_gamma = regime_config['gamma_min']
+        max_gamma = regime_config['gamma_max']
+        target_gamma = regime_config['gamma_target']
+        
+        # Need at least 10 trades to make a meaningful adjustment (reduced from 20)
+        if len(trade_pnls) < 10:
             return
         
-        # Calculate win rate from last 50 trades
+        # Calculate metrics from last 50 trades
         recent_pnls = trade_pnls[-50:]
         wins = sum(1 for pnl in recent_pnls if pnl > 0)
         win_rate = wins / len(recent_pnls)
         
-        # Adjustment parameters
-        target_win_rate_high = 0.55  # Above this, we can be more aggressive
-        target_win_rate_low = 0.45   # Below this, we need to widen
-        gamma_step = 0.02            # Adjustment step
-        min_gamma = 0.1              # Floor (can't go too tight)
-        max_gamma = 2.0              # Ceiling (can't go too wide)
+        # NEW: PnL magnitude analysis
+        total_pnl = sum(recent_pnls)
+        avg_pnl = total_pnl / len(recent_pnls)
+        avg_win = sum(p for p in recent_pnls if p > 0) / max(wins, 1)
+        avg_loss = sum(p for p in recent_pnls if p < 0) / max(len(recent_pnls) - wins, 1)
         
+        # Calculate profit factor (risk/reward ratio)
+        profit_factor = abs(avg_win / avg_loss) if avg_loss != 0 else 2.0
+        
+        # Performance score: combines win rate and profit factor
+        # Score > 1.0 = doing well, < 1.0 = underperforming
+        performance_score = win_rate * profit_factor
+        
+        # Adaptive step based on how far we are from optimal
+        base_step = 0.01
         current_gamma = self.gamma
+        
+        # Distance from target as multiplier
+        distance_from_target = abs(current_gamma - target_gamma) / target_gamma
+        adaptive_step = base_step * (1 + distance_from_target)
+        adaptive_step = min(adaptive_step, 0.05)  # Cap at 0.05
+        
+        # Determine direction based on BOTH win rate and PnL
         adjustment = 0.0
         
-        if win_rate > target_win_rate_high:
-            # High win rate -> Decrease gamma (tighter spreads)
-            adjustment = -gamma_step
-        elif win_rate < target_win_rate_low:
-            # Low win rate -> Increase gamma (wider spreads)
-            adjustment = gamma_step
+        # High performance: tighten spreads
+        if performance_score > 1.2 and win_rate > 0.55:
+            adjustment = -adaptive_step * 1.5  # Aggressive tightening
+        elif performance_score > 1.0 and win_rate > 0.50:
+            adjustment = -adaptive_step  # Moderate tightening
+        # Low performance: widen spreads
+        elif performance_score < 0.7 or win_rate < 0.40:
+            adjustment = adaptive_step * 1.5  # Aggressive widening
+        elif performance_score < 0.9 or win_rate < 0.45:
+            adjustment = adaptive_step  # Moderate widening
         
-        # Apply & Clamp
-        new_gamma = max(min_gamma, min(max_gamma, current_gamma + adjustment))
+        # Apply with REGIME-SPECIFIC bounds
+        new_gamma = current_gamma + adjustment
+        new_gamma = max(min_gamma, min(max_gamma, new_gamma))
         
-        if abs(new_gamma - current_gamma) > 0.001:
+        # Update regime performance tracking
+        regime_perf = state['regime_performance'].get(regime, {'trades': 0, 'pnl': 0.0, 'wins': 0})
+        
+        if abs(new_gamma - current_gamma) > 0.002:
             self.gamma = new_gamma
             settings.AS_GAMMA = new_gamma  # Sync global
             
             direction = "↓ TIGHTER" if adjustment < 0 else "↑ WIDER"
             logger.info(
-                f"[{symbol}] Dynamic Gamma: {current_gamma:.2f} -> {new_gamma:.2f} "
-                f"({direction}, WinRate: {win_rate:.1%})"
+                f"[{symbol}] 🎚️ Gamma {direction}: {current_gamma:.3f} → {new_gamma:.3f} "
+                f"(WinRate: {win_rate:.0%}, PF: {profit_factor:.2f}, Regime: {regime})"
             )
     
     def _update_persistence(self, symbol: str, state: dict):
@@ -605,7 +713,9 @@ class AvellanedaStoikovStrategy(BaseStrategy):
                 'latency_avg': sum(state['latency_history'])/len(state['latency_history']) if state['latency_history'] else 0,
                 'my_bid': state.get('my_bid', 0.0),
                 'my_ask': state.get('my_ask', 0.0),
-                'market_mid': state.get('market_mid', 0.0)
+                'market_mid': state.get('market_mid', 0.0),
+                # PHASE 2: Persist regime performance for learning across restarts
+                'regime_performance': state.get('regime_performance', {})
             }
             
             self.state_manager.update_symbol_state(symbol, snapshot)
@@ -614,12 +724,13 @@ class AvellanedaStoikovStrategy(BaseStrategy):
             logger.warning(f"Failed to persist state for {symbol}: {e}")
 
     async def on_fill(self, event: FillEvent):
-        """Handle fill events - update inventory."""
+        """Handle fill events - update inventory and regime performance."""
         symbol = event.symbol.lower()
         if symbol not in self.symbols:
             return
         
         state = self._state[symbol]
+        regime = state.get('regime', 'UNCERTAIN')
         
         # Update inventory
         if event.side == 'BUY':
@@ -644,33 +755,78 @@ class AvellanedaStoikovStrategy(BaseStrategy):
             else:
                 state['trade_pnls'] = trade_pnls
             
+            # PHASE 2: Track performance per regime
+            if regime in state['regime_performance']:
+                state['regime_performance'][regime]['trades'] += 1
+                state['regime_performance'][regime]['pnl'] += realized_pnl
+                if realized_pnl > 0:
+                    state['regime_performance'][regime]['wins'] += 1
+            
             # Update gamma based on win rate
             self._update_gamma(symbol)
         
         logger.info(
             f"[{symbol}] Fill: {event.side} {event.quantity} @ {event.price}, "
-            f"Inventory: {state['inventory']:.4f}"
+            f"Inventory: {state['inventory']:.4f}, Regime: {regime}"
             + (f", PnL: ${realized_pnl:.4f}" if realized_pnl else "")
         )
     
     async def on_regime_change(self, event: RegimeEvent):
-        """Adjust strategy for regime changes."""
+        """
+        PHASE 2: Regime-aware parameter adjustment.
+        
+        Immediately applies regime-specific gamma/kappa presets when regime changes,
+        rather than waiting for fill-based optimization to catch up.
+        """
         symbol = event.symbol.lower()
         if symbol not in self.symbols:
             return
         
         state = self._state[symbol]
         old_regime = state['regime']
-        state['regime'] = event.regime
+        new_regime = event.regime
+        state['regime'] = new_regime
+        state['last_regime_change'] = time.time()
         
-        logger.info(f"[{symbol}] Regime: {old_regime} -> {event.regime}")
+        # PHASE 2: Immediately apply regime-specific parameters
+        regime_config = self.REGIME_PARAMS.get(new_regime, self.REGIME_PARAMS['UNCERTAIN'])
+        target_gamma = regime_config['gamma_target']
+        target_kappa = regime_config['kappa_target']
         
-        # Pause in strong trends (inventory death spiral risk)
-        # UPDATE: We no longer PAUSE globally. We use asymmetric quoting in _calculate_quote
-        # to cut only the dangerous side.
-        if event.regime == 'TRENDING':
-            # state['paused'] = True  <-- DISABLED, we want to trade the safe side
-            logger.info(f"[{symbol}] Trending market detected - Switching to Asymmetric Quoting")
+        old_gamma = self.gamma
+        old_kappa = state['kappa']
+        
+        # Smoothly transition towards target (don't jump abruptly)
+        # Move 50% of the way to target immediately
+        new_gamma = old_gamma + 0.5 * (target_gamma - old_gamma)
+        new_kappa = old_kappa + 0.5 * (target_kappa - old_kappa)
+        
+        # Apply with bounds
+        new_gamma = max(regime_config['gamma_min'], min(regime_config['gamma_max'], new_gamma))
+        new_kappa = max(regime_config['kappa_min'], min(regime_config['kappa_max'], new_kappa))
+        
+        self.gamma = new_gamma
+        state['kappa'] = new_kappa
+        settings.AS_GAMMA = new_gamma
+        
+        logger.info(
+            f"[{symbol}] 🔄 Regime: {old_regime} → {new_regime} | "
+            f"Gamma: {old_gamma:.3f}→{new_gamma:.3f}, Kappa: {old_kappa:.2f}→{new_kappa:.2f}"
+        )
+        
+        # Log regime performance for the old regime (for analysis)
+        if old_regime in state['regime_performance']:
+            perf = state['regime_performance'][old_regime]
+            if perf['trades'] > 0:
+                win_rate = perf['wins'] / perf['trades']
+                logger.info(
+                    f"[{symbol}] 📊 {old_regime} performance: "
+                    f"{perf['trades']} trades, ${perf['pnl']:.2f} PnL, {win_rate:.0%} win rate"
+                )
+        
+        # Regime-specific behavior
+        if new_regime == 'TRENDING':
+            logger.info(f"[{symbol}] Trending market - Using asymmetric quoting")
             
             if abs(state['inventory']) > 0.0001:
                 direction = 'LONG' if state['inventory'] > 0 else 'SHORT'
@@ -679,9 +835,12 @@ class AvellanedaStoikovStrategy(BaseStrategy):
                     f"Monitoring for safe exit opportunities."
                 )
         
-        elif event.regime in ('MEAN_REVERTING', 'UNCERTAIN'):
+        elif new_regime == 'VOLATILE':
+            logger.warning(f"[{symbol}] ⚡ VOLATILE market - Spreads widened for protection")
+        
+        elif new_regime == 'MEAN_REVERTING':
             state['paused'] = False
-            logger.info(f"[{symbol}] Resuming MM in {event.regime} regime")
+            logger.info(f"[{symbol}] ✅ Mean-reverting - Ideal conditions for tight spreads")
     
     def _check_underwater_position(
         self,

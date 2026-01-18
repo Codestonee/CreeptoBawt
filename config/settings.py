@@ -57,17 +57,19 @@ class Settings(BaseSettings):
     }
     
     # Trading Pairs
-    TRADING_SYMBOLS: list[str] = ["ltcusdc", "xrpusdc", "dogeusdc"]  # Reduced to 3 pairs
+    TRADING_SYMBOLS: list[str] = ["ethusdc", "ltcusdc", "xrpusdc"]  # Affordable pairs for $50 capital
 
     # Paper Trading Config
     PAPER_TRADING: bool = False       # True = Simulated, False = Real Money
     INITIAL_CAPITAL: float = 50.0  # Initial capital for simulation
 
     # Strategy Config
-    # Avellaneda-Stoikov Parameters
-    AS_GAMMA: float = 0.1            # Reduced from 0.5 (Tighter spreads)
-    AS_KAPPA: float = 0.3            # Reduced from 0.5 (Less inventory averse)
-    MIN_PROFIT_PER_TRADE_USD: float = 0.005  # Reduced from 0.05 (Allows tightly priced small orders)
+    # Avellaneda-Stoikov Parameters - OPTIMIZED FOR PROFITABILITY
+    # Key insight: Spreads were too wide (0.25%) causing ASK to never fill
+    # Need tighter spreads to complete round-trips and capture profits
+    AS_GAMMA: float = 0.03           # REDUCED from 0.1 - Much tighter spreads for competitive quoting
+    AS_KAPPA: float = 0.15           # REDUCED from 0.3 - Faster quote updates, more aggressive
+    MIN_PROFIT_PER_TRADE_USD: float = 0.002  # REDUCED from 0.005 - Allow micro-profits on small trades
     ESTIMATED_FEE_BPS: float = 7.0   # Estimated taker fee in basis points
 
     # --------------------------------------------------------------------------
@@ -102,15 +104,15 @@ class Settings(BaseSettings):
     GLT_USE_ITERATIVE_THETA: bool = True     # Use enhanced theta calculation (slower but more accurate)
     
     # Symbol Whitelist (Empty = All Allowed)
-    APPROVED_SYMBOLS: list[str] = ['ltcusdc', 'xrpusdc', 'dogeusdc']  # Reduced to 3 pairs for $50 balance
+    APPROVED_SYMBOLS: list[str] = ['ethusdc', 'ltcusdc', 'xrpusdc']  # Matches TRADING_SYMBOLS
     
     ADMIN_RESUME_CODE: str = "creep-resume-123"      # Simple code to unhalt
     # --------------------------------------------------------------------------
     
-    # Fee Structure
-    MAKER_FEE_BPS: float = 2.0       # 0.02% maker fee
+    # Fee Structure - TUNED FOR COMPETITIVE SPREADS
+    MAKER_FEE_BPS: float = 2.0       # 0.02% maker fee (Binance default with BNB discount)
     TAKER_FEE_BPS: float = 5.0       # 0.05% taker fee
-    MIN_PROFIT_BPS: float = 5.0      # Reduced from 10.0 (Tighter floor)
+    MIN_PROFIT_BPS: float = 3.0      # REDUCED from 5.0 - Allows tighter spreads (covers 2x maker fee + small margin)
     
     # GLT (Guéant-Lehalle-Tapia) Parameters
     GLT_GAMMA: float = 0.3          # Risk aversion

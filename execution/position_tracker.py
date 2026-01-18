@@ -232,14 +232,41 @@ class PositionTracker:
                                 f"Local={local_pos.quantity:.4f}, Exchange={exch_qty:.4f}"
                             )
                             mismatch_count += 1
+                            
+                            # CRITICAL FIX: Backfill missed trades from REST API
+                            # This ensures the Dashboard shows all trades, even ones missed by WebSocket
+                            asyncio.create_task(self._backfill_missed_trades(symbol))
                         
                         # CRITICAL FIX FOR SPOT MODE:
-                        # Binance Spot API returns 0.0 for avgPrice. We must preserve our local 
-                        # weighted average price to track PnL, unless we have no local data.
-                        if settings.SPOT_MODE and exch_price == 0.0 and abs(local_pos.avg_entry_price) > 0:
-                            exch_price = local_pos.avg_entry_price
+                        # Binance Spot API ALWAYS returns 0.0 for avgPrice. 
+                        # We must ALWAYS preserve our local weighted average price to track PnL.
+                        # This check must happen OUTSIDE the mismatch block.
+                        if settings.SPOT_MODE and exch_price == 0.0:
+                            if abs(local_pos.avg_entry_price) > 0:
+                                exch_price = local_pos.avg_entry_price
+                                logger.info(f"💾 PRESERVED entry price for {symbol.upper()}: ${exch_price:.4f}")
+                            else:
+                                # CRITICAL FIX: Try to backfill entry price from recent trades
+                                backfilled_price = await self._backfill_entry_price_from_trades(symbol, exch_qty)
+                                if backfilled_price > 0:
+                                    exch_price = backfilled_price
+                                    logger.info(f"💰 BACKFILLED entry price for {symbol.upper()}: ${exch_price:.4f}")
+                                else:
+                                    logger.warning(f"⚠️ Cannot preserve entry price for {symbol.upper()} - local has $0.00")
+                    else:
+                        # NEW POSITION FROM EXCHANGE (no local data)
+                        # This happens on fresh bot start with existing exchange positions
+                        if settings.SPOT_MODE and exch_price == 0.0:
+                            # Try to backfill entry price from recent trades
+                            backfilled_price = await self._backfill_entry_price_from_trades(symbol, exch_qty)
+                            if backfilled_price > 0:
+                                exch_price = backfilled_price
+                                logger.info(f"💰 NEW POSITION - BACKFILLED entry price for {symbol.upper()}: ${exch_price:.4f}")
+                            else:
+                                logger.warning(f"⚠️ NEW POSITION {symbol.upper()} - could not determine entry price")
                     
-                    # Exchange is source of truth - overwrite local
+                    # Exchange is source of truth for QUANTITY - overwrite local
+                    # But for avg_entry_price in spot mode, use preserved local value
                     self._positions[symbol] = Position(
                         symbol=symbol,
                         quantity=exch_qty,
@@ -324,12 +351,38 @@ class PositionTracker:
         symbol: str, 
         quantity_delta: float, 
         price: float,
-        commission: float = 0.0
+        commission: float = 0.0,
+        commission_asset: str = ""  # NEW: Which asset the fee was paid in
     ) -> None:
         """
         Update position after a fill.
+        
+        CRITICAL FIX: If commission is paid in BASE asset (e.g., LTC for LTCUSDC),
+        we must subtract the commission from the quantity received, otherwise
+        we'll think we have more than we actually do and SELL orders will fail.
         """
         symbol = symbol.lower()
+        
+        # CRITICAL: Adjust quantity_delta if commission paid in BASE asset
+        if commission_asset and commission > 0:
+            # Extract base asset from symbol
+            base_asset = None
+            if symbol.endswith('usdc'):
+                base_asset = symbol[:-4].upper()
+            elif symbol.endswith('usdt'):
+                base_asset = symbol[:-4].upper()
+            else:
+                base_asset = symbol[:-4].upper()  # Best effort
+            
+            if commission_asset.upper() == base_asset:
+                # Fee was paid in BASE - adjust the delta
+                if quantity_delta > 0:
+                    # BUY: We received less than filled_qty because fee was taken
+                    quantity_delta = max(quantity_delta - commission, 0.0)
+                    logger.debug(
+                        f"Adjusted BUY qty for BASE commission: -{commission} {commission_asset}"
+                    )
+                # Note: For SELL, the fee reduces what we get in quote, not base qty
         
         async with self._positions_lock:
             current_pos = self._positions.get(symbol)
@@ -557,6 +610,168 @@ class PositionTracker:
             # Don't let DB errors crash the bot - just log
             logger.error(f"Failed to save position {symbol} to DB: {e}")
     
+    async def _backfill_entry_price_from_trades(self, symbol: str, position_qty: float) -> float:
+        """
+        Calculate entry price from recent trades when we don't have it locally.
+        
+        For SPOT mode, Binance doesn't provide avgEntryPrice in account balance.
+        We backfill by looking at recent trades and calculating weighted average.
+        
+        Args:
+            symbol: Trading pair (e.g., 'ethusdc')
+            position_qty: Current position quantity from exchange
+            
+        Returns:
+            Calculated weighted average entry price, or 0.0 if can't calculate
+        """
+        try:
+            logger.debug(f"🔍 Backfilling entry price for {symbol.upper()} (qty={position_qty:.4f})")
+            
+            # Get recent trades from Binance
+            rest_trades = await self.exchange.get_my_trades(
+                symbol=symbol.upper(),
+                limit=100  # Get last 100 trades for this symbol
+            )
+            
+            if not rest_trades:
+                logger.debug(f"No trades found for {symbol.upper()}")
+                return 0.0
+            
+            # Sort by time descending (newest first)
+            rest_trades.sort(key=lambda t: t.get('time', 0), reverse=True)
+            
+            # Walk backwards through trades to build up to current position
+            remaining_qty = abs(position_qty)
+            total_value = 0.0
+            total_qty = 0.0
+            
+            for trade in rest_trades:
+                trade_qty = float(trade.get('qty', 0))
+                trade_price = float(trade.get('price', 0))
+                is_buyer = trade.get('isBuyer', False)
+                
+                # Only count BUY trades for long positions (positive qty)
+                if position_qty > 0 and not is_buyer:
+                    continue
+                # Only count SELL trades for short positions (negative qty) - rare in spot
+                if position_qty < 0 and is_buyer:
+                    continue
+                
+                # How much of this trade contributes to current position?
+                contribution = min(trade_qty, remaining_qty)
+                
+                if contribution > 0:
+                    total_value += contribution * trade_price
+                    total_qty += contribution
+                    remaining_qty -= contribution
+                    
+                    if remaining_qty <= 0.0001:  # Float epsilon
+                        break
+            
+            if total_qty > 0:
+                avg_price = total_value / total_qty
+                logger.info(
+                    f"✅ Backfilled entry price for {symbol.upper()}: "
+                    f"${avg_price:.4f} (from {len(rest_trades)} trades, matched {total_qty:.4f})"
+                )
+                return avg_price
+            else:
+                logger.warning(f"Could not backfill entry price for {symbol.upper()} - no matching trades")
+                return 0.0
+                
+        except Exception as e:
+            logger.error(f"Entry price backfill failed for {symbol}: {e}")
+            return 0.0
+    
+    async def _backfill_missed_trades(self, symbol: str):
+        """
+        Backfill missed trades from Binance REST API.
+        
+        This fixes the 'invisible trades' problem where WebSocket drops a fill event.
+        We query myTrades from Binance and log any trades not already in our database.
+        """
+        from config.settings import settings
+        import time
+        
+        try:
+            logger.info(f"🔄 BACKFILLING: Checking for missed trades on {symbol.upper()}")
+            
+            # Query Binance REST API for recent trades (last 24 hours)
+            # Binance myTrades returns trades for the authenticated user
+            rest_trades = await self.exchange.get_my_trades(
+                symbol=symbol.upper(),
+                limit=100  # Get last 100 trades
+            )
+            
+            if not rest_trades:
+                logger.debug(f"No trades found for {symbol.upper()}")
+                return
+            
+            # Get local trade IDs from database to avoid duplicates
+            # Query the trades table for this symbol
+            local_trade_ids = set()
+            try:
+                trades_from_db = await self.db.get_recent_trades(symbol, limit=200)
+                for t in trades_from_db:
+                    if t.get('trade_id'):
+                        local_trade_ids.add(str(t['trade_id']))
+            except Exception as e:
+                logger.warning(f"Could not fetch local trades for dedup: {e}")
+            
+            # Find and log missing trades
+            recovered_count = 0
+            for trade in rest_trades:
+                trade_id = str(trade.get('id', ''))
+                
+                if trade_id and trade_id not in local_trade_ids:
+                    # This trade exists on Binance but not in our database!
+                    qty = float(trade.get('qty', 0))
+                    price = float(trade.get('price', 0))
+                    side = 'BUY' if trade.get('isBuyer') else 'SELL'
+                    commission = float(trade.get('commission', 0))
+                    commission_asset = trade.get('commissionAsset', 'USDC')
+                    is_maker = trade.get('isMaker', False)
+                    trade_time = trade.get('time', int(time.time() * 1000))
+                    
+                    logger.warning(
+                        f"🔴 RECOVERED ORPHAN TRADE: {symbol.upper()} {side} "
+                        f"{qty} @ ${price} (Trade ID: {trade_id})"
+                    )
+                    
+                    # Log to database so Dashboard can see it
+                    trade_record = {
+                        'type': 'trade',
+                        'trade_id': trade_id,
+                        'timestamp': trade_time / 1000.0,
+                        'symbol': symbol.lower(),
+                        'side': side,
+                        'quantity': qty,
+                        'price': price,
+                        'commission': commission,
+                        'commission_asset': commission_asset,
+                        'is_maker': is_maker,
+                        'pnl': 0.0,  # Will be recalculated by PnL engine
+                        'strategy_id': 'rest_backfill',
+                        'recovered': True
+                    }
+                    
+                    try:
+                        self.db.submit_write_task(trade_record)
+                        recovered_count += 1
+                    except Exception as e:
+                        logger.error(f"Failed to log recovered trade: {e}")
+            
+            if recovered_count > 0:
+                logger.info(
+                    f"✅ BACKFILL COMPLETE: Recovered {recovered_count} orphan trades "
+                    f"for {symbol.upper()}"
+                )
+            else:
+                logger.debug(f"No orphan trades found for {symbol.upper()}")
+                
+        except Exception as e:
+            logger.error(f"Trade backfill failed for {symbol}: {e}", exc_info=True)
+
     async def shutdown(self):
         """Cleanup on shutdown."""
         logger.info("🔄 Shutting down Position Tracker...")

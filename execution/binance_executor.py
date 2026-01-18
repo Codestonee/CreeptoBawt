@@ -298,7 +298,8 @@ class BinanceExecutionHandler:
                     client_order_id=client_order_id,
                     filled_qty=last_filled_qty,
                     fill_price=last_filled_price,
-                    commission=commission
+                    commission=commission,
+                    commission_asset=commission_asset
                 )
                 
                 # Calculate realized PnL
@@ -683,10 +684,20 @@ class BinanceExecutionHandler:
         return 0.01, 0.001
         
     def _round_step_size(self, value: float, step_size: float) -> float:
-        """Round value to the nearest step_size."""
-        if step_size == 0: return value
-        precision = int(round(-math.log(step_size, 10), 0))
-        return round(value, precision)
+        """
+        Floor value to a valid step_size multiple.
+        
+        CRITICAL: round() can round UP and cause "insufficient balance" in spot mode.
+        We must always floor to ensure SELL qty <= free balance.
+        """
+        if step_size == 0:
+            return value
+        
+        from decimal import Decimal, ROUND_DOWN
+        v = Decimal(str(value))
+        s = Decimal(str(step_size))
+        floored = (v // s) * s
+        return float(floored)
     
     async def get_position(self, symbol: str) -> float:
         """Get current position quantity from OrderManager."""

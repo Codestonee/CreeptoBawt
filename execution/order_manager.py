@@ -113,6 +113,10 @@ class OrderManager:
         self._order_timeouts: Dict[str, float] = {}  # client_order_id -> created_time
         self.order_timeout_sec = 300  # 5 minutes default
         
+        # Track failed cancellations to avoid retrying indefinitely
+        self._failed_cancel_attempts: Dict[str, int] = {}  # client_order_id -> failure count
+        self._max_cancel_failures = 2  # Stop trying after this many failures
+        
         # Register as global instance
         _set_global_instance(self)
         
@@ -415,6 +419,7 @@ class OrderManager:
         filled_qty: float,
         fill_price: float,
         commission: float = 0.0,
+        commission_asset: str = "",  # NEW: Track which asset fee was paid in
         pnl: float = 0.0,
         is_orphan: bool = False  # NEW parameter
     ) -> Optional[Order]:
@@ -474,16 +479,39 @@ class OrderManager:
         else:
              new_state = OrderState.PARTIAL_FILL
         
-        # 2. Update Position Tracker (CRITICAL)
+        # 2. Calculate PnL BEFORE updating position
+        # This is critical for spot mode where exchange doesn't provide entry prices
+        pos_before = await self.position_tracker.get_position(order.symbol)
+        calculated_pnl = 0.0
+        if pos_before and pos_before.quantity != 0 and pos_before.avg_entry_price > 0:
+            # Check if this trade reduces the position
+            is_reducing = (
+                (pos_before.quantity > 0 and order.side == 'SELL') or
+                (pos_before.quantity < 0 and order.side == 'BUY')
+            )
+            if is_reducing:
+                if pos_before.quantity > 0:  # Long position being reduced
+                    calculated_pnl = (fill_price - pos_before.avg_entry_price) * filled_qty
+                else:  # Short position being reduced
+                    calculated_pnl = (pos_before.avg_entry_price - fill_price) * filled_qty
+                calculated_pnl -= commission  # Subtract commission
+                logger.info(f"💰 PNL CALCULATED: Entry=${pos_before.avg_entry_price:.4f} Exit=${fill_price:.4f} PnL=${calculated_pnl:.4f}")
+        
+        # Use calculated PnL if available, otherwise use passed-in pnl
+        if abs(calculated_pnl) > 0.0001:
+            pnl = calculated_pnl
+        
+        # 3. Update Position Tracker (CRITICAL)
         quantity_delta = filled_qty if order.side == 'BUY' else -filled_qty
         await self.position_tracker.update_position(
             symbol=order.symbol,
             quantity_delta=quantity_delta,
             price=fill_price,
-            commission=commission
+            commission=commission,
+            commission_asset=commission_asset  # Pass through for BASE fee adjustment
         )
         
-        # 3. Update Risk Gatekeeper PnL
+        # 4. Update Risk Gatekeeper PnL
         self.risk_gatekeeper.update_pnl(pnl)
         
         # 4. Persist Order Updates
@@ -569,6 +597,16 @@ class OrderManager:
             
         await self.db.update_order(update_data)
         
+        # CRITICAL FIX: Remove orders from cache when they reach terminal states
+        # This prevents stale order IDs from accumulating and causing -2011 errors
+        terminal_states = [OrderState.FILLED, OrderState.CANCELED, OrderState.REJECTED, OrderState.EXPIRED]
+        if new_state in terminal_states:
+            if client_order_id in self._orders:
+                del self._orders[client_order_id]
+                logger.debug(f"Removed terminal order from cache: {client_order_id}")
+            # Also clean up any failed cancel tracking
+            self._failed_cancel_attempts.pop(client_order_id, None)
+        
         return order
 
     async def cancel_order(self, client_order_id: str) -> bool:
@@ -576,8 +614,26 @@ class OrderManager:
         try:
             order = self._orders.get(client_order_id)
             if not order:
-                logger.warning(f"Cancel failed: Order {client_order_id} not found")
+                logger.debug(f"Cancel skipped: Order {client_order_id} not in cache")
                 return False
+            
+            # Skip orders already in terminal states
+            terminal_states = [OrderState.FILLED.value, OrderState.CANCELED.value, 
+                              OrderState.REJECTED.value, OrderState.EXPIRED.value]
+            if order.state in terminal_states:
+                # Clean up from cache
+                del self._orders[client_order_id]
+                self._failed_cancel_attempts.pop(client_order_id, None)
+                return True
+            
+            # Check if we've already failed to cancel this order multiple times
+            fail_count = self._failed_cancel_attempts.get(client_order_id, 0)
+            if fail_count >= self._max_cancel_failures:
+                logger.debug(f"Cancel skipped: Order {client_order_id} exceeded max cancel attempts")
+                # Remove from cache - it's likely already gone from exchange
+                del self._orders[client_order_id]
+                self._failed_cancel_attempts.pop(client_order_id, None)
+                return True
             
             # Call exchange (symbol must be UPPERCASE for Binance)
             await self.exchange.cancel_order(
@@ -592,24 +648,64 @@ class OrderManager:
             return True
             
         except Exception as e:
-            logger.error(f"Failed to cancel order {client_order_id}: {e}")
-            return False
+            error_str = str(e)
+            # Handle "Unknown order sent" error (-2011) - order doesn't exist on exchange
+            if '-2011' in error_str or 'Unknown order' in error_str:
+                logger.debug(f"Order {client_order_id} not found on exchange - removing from cache")
+                if client_order_id in self._orders:
+                    del self._orders[client_order_id]
+                self._failed_cancel_attempts.pop(client_order_id, None)
+                return True  # Consider this a success - order is gone
+            else:
+                logger.error(f"Failed to cancel order {client_order_id}: {e}")
+                # Track failure count
+                self._failed_cancel_attempts[client_order_id] = fail_count + 1
+                return False
 
     async def cancel_all_orders(self, symbol: Optional[str] = None):
         """Cancel all open orders."""
         logger.info(f"Using Emergency Cancel All (Symbol: {symbol})")
-        # Implementation depends on exchange client capabilities
-        # For safety, we should iterate known open orders and cancel them
-        open_orders = [o for o in self._orders.values() if o.state in [
-            OrderState.PENDING_SUBMIT.value, 
-            OrderState.SUBMITTED.value, 
-            OrderState.PARTIAL_FILL.value
-        ]]
+        
+        # First, prune any stale orders from cache
+        await self.prune_stale_orders()
+        
+        # Now only iterate truly open orders
+        open_states = [OrderState.PENDING_SUBMIT.value, OrderState.SUBMITTED.value, OrderState.PARTIAL_FILL.value]
+        open_orders = [o for o in list(self._orders.values()) if o.state in open_states]
         
         for order in open_orders:
-            if symbol and order.symbol != symbol:
+            if symbol and order.symbol != symbol.lower():
                 continue
             await self.cancel_order(order.client_order_id)
+    
+    async def prune_stale_orders(self, max_age_seconds: float = 600):
+        """
+        Remove stale orders from cache.
+        Orders in terminal states or older than max_age are removed.
+        """
+        now = time.time()
+        to_remove = []
+        
+        terminal_states = [OrderState.FILLED.value, OrderState.CANCELED.value, 
+                          OrderState.REJECTED.value, OrderState.EXPIRED.value]
+        
+        for client_id, order in self._orders.items():
+            # Remove terminal orders
+            if order.state in terminal_states:
+                to_remove.append(client_id)
+                continue
+            
+            # Remove very old non-terminal orders (they're likely stale)
+            age = now - order.created_at
+            if age > max_age_seconds:
+                to_remove.append(client_id)
+        
+        for client_id in to_remove:
+            del self._orders[client_id]
+            self._failed_cancel_attempts.pop(client_id, None)
+        
+        if to_remove:
+            logger.info(f"🧹 Pruned {len(to_remove)} stale orders from cache")
 
     async def get_order(self, client_order_id: str) -> Optional[Order]:
         return self._orders.get(client_order_id)
