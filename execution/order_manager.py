@@ -4,6 +4,7 @@ Order Manager - State machine for order lifecycle with atomic transactions.
 Provides ACID guarantees for order + position updates via centralized components.
 """
 
+import asyncio
 import logging
 import time
 import uuid
@@ -117,10 +118,14 @@ class OrderManager:
         self._failed_cancel_attempts: Dict[str, int] = {}  # client_order_id -> failure count
         self._max_cancel_failures = 2  # Stop trying after this many failures
         
+        # PHASE 2 FIX: Async locks for race condition prevention
+        self._order_lock = asyncio.Lock()  # Protects order creation/submission
+        self._cache_lock = asyncio.Lock()  # Protects _orders cache access
+        
         # Register as global instance
         _set_global_instance(self)
         
-        logger.info("OrderManager initialized")
+        logger.info("OrderManager initialized with async locks")
     
     async def initialize(self):
         """Initialize the order manager and restore state from DB."""
@@ -186,52 +191,59 @@ class OrderManager:
         """
         Create local order record (Risk Check + DB Persistence).
         Does NOT submit to exchange.
+        
+        PHASE 2 FIX: Protected by async lock to prevent race conditions during risk checks.
         """
-        try:
-            # 1. RISK CHECK
-            risk_result = await self.risk_gatekeeper.validate_order(
-                symbol, quantity, price, side
-            )
-            
-            if not risk_result.is_allowed:
-                logger.warning(f"Order REJECTED by risk: {risk_result.reason}")
+        async with self._order_lock:
+            try:
+                # 1. RISK CHECK
+                risk_result = await self.risk_gatekeeper.validate_order(
+                    symbol, quantity, price, side
+                )
+                
+                if not risk_result.is_allowed:
+                    logger.warning(f"Order REJECTED by risk: {risk_result.reason}")
+                    return None
+                
+                # 2. CREATE ORDER (Local State)
+                order = Order(
+                    symbol=symbol.lower(),
+                    side=side.upper(),
+                    order_type=order_type,
+                    time_in_force=time_in_force,
+                    quantity=quantity,
+                    filled_quantity=0,
+                    remainder_quantity=quantity,
+                    price=price,
+                    state=OrderState.PENDING_SUBMIT.value,
+                    trace_id=trace_id or str(uuid.uuid4())
+                )
+                
+                # Persist to DB (Async)
+                await self.db.insert_order({
+                    'client_order_id': order.client_order_id,
+                    'trace_id': order.trace_id,
+                    'symbol': order.symbol,
+                    'side': order.side,
+                    'order_type': order.order_type,
+                    'time_in_force': order.time_in_force,
+                    'quantity': order.quantity,
+                    'price': order.price,
+                    'state': order.state,
+                    'created_at': order.created_at,
+                    'updated_at': order.updated_at
+                })
+                
+                # Add to cache (Protected by cache lock)
+                async with self._cache_lock:
+                    self._orders[order.client_order_id] = order
+                    self._order_timeouts[order.client_order_id] = order.created_at
+                
+                return order
+                
+            except Exception as e:
+                logger.error(f"Failed to create order: {e}")
                 return None
-            
-            # 2. CREATE ORDER (Local State)
-            order = Order(
-                symbol=symbol.lower(),
-                side=side.upper(),
-                order_type=order_type,
-                time_in_force=time_in_force,
-                quantity=quantity,
-                filled_quantity=0,
-                remainder_quantity=quantity,
-                price=price,
-                state=OrderState.PENDING_SUBMIT.value,
-                trace_id=trace_id or str(uuid.uuid4())
-            )
-            
-            # Persist to DB (Async)
-            await self.db.insert_order({
-                'client_order_id': order.client_order_id,
-                'trace_id': order.trace_id,
-                'symbol': order.symbol,
-                'side': order.side,
-                'order_type': order.order_type,
-                'time_in_force': order.time_in_force,
-                'quantity': order.quantity,
-                'price': order.price,
-                'state': order.state,
-                'created_at': order.created_at,
-                'updated_at': order.updated_at
-            })
-            
-            self._orders[order.client_order_id] = order
-            return order
-            
-        except Exception as e:
-            logger.error(f"Failed to create local order: {e}")
-            return None
 
     async def submit_order(
         self,
@@ -245,9 +257,10 @@ class OrderManager:
     ) -> Optional[Order]:
         """
         Submit order with full lifecycle (Create + Exchange Submit).
+        PHASE 2 FIX: Uses properly locked creation step.
         """
         try:
-            # 1. Create Local Order
+            # 1. Create Local Order (Protected by Lock inside create_order)
             order = await self.create_order(
                 symbol, side, quantity, price, order_type, time_in_force, trace_id
             )
@@ -512,7 +525,7 @@ class OrderManager:
         )
         
         # 4. Update Risk Gatekeeper PnL
-        self.risk_gatekeeper.update_pnl(pnl)
+        await self.risk_gatekeeper.update_pnl(pnl)
         
         # 4. Persist Order Updates
         order.filled_quantity = new_filled
@@ -597,13 +610,15 @@ class OrderManager:
             
         await self.db.update_order(update_data)
         
-        # CRITICAL FIX: Remove orders from cache when they reach terminal states
-        # This prevents stale order IDs from accumulating and causing -2011 errors
-        terminal_states = [OrderState.FILLED, OrderState.CANCELED, OrderState.REJECTED, OrderState.EXPIRED]
-        if new_state in terminal_states:
-            if client_order_id in self._orders:
-                del self._orders[client_order_id]
-                logger.debug(f"Removed terminal order from cache: {client_order_id}")
+        # Cleanup cache if terminal state
+        if new_state in [OrderState.FILLED, OrderState.CANCELED, OrderState.REJECTED, OrderState.EXPIRED]:
+            # PHASE 2 FIX: Protected cache access
+            async with self._cache_lock:
+                if client_order_id in self._orders:
+                    del self._orders[client_order_id]
+                    logger.debug(f"Removed terminal order from cache: {client_order_id}")
+                if client_order_id in self._order_timeouts:
+                    del self._order_timeouts[client_order_id]
             # Also clean up any failed cancel tracking
             self._failed_cancel_attempts.pop(client_order_id, None)
         
@@ -663,19 +678,49 @@ class OrderManager:
                 return False
 
     async def cancel_all_orders(self, symbol: Optional[str] = None):
-        """Cancel all open orders."""
+        """
+        Cancel all open orders.
+        
+        CRITICAL UPGRADE: Force cancellation on exchange to clear orphans.
+        This prevents "Insufficient Balance" errors caused by untracked orders.
+        """
         logger.info(f"Using Emergency Cancel All (Symbol: {symbol})")
         
-        # First, prune any stale orders from cache
+        # 1. Force Exchange Cancel (The "Nuke" Option)
+        # This clears orders we might have lost track of (orphans)
+        if symbol and self.exchange:
+            try:
+                # Check for Spot mode via settings or hasattr
+                # We can try/except the methods
+                from config.settings import settings
+                
+                if settings.SPOT_MODE:
+                     if hasattr(self.exchange, 'cancel_open_orders'):
+                        await self.exchange.cancel_open_orders(symbol=symbol.upper())
+                        logger.info(f"💥 Force canceled all {symbol} orders on exchange (Spot)")
+                else:
+                    if hasattr(self.exchange, 'futures_cancel_all_open_orders'):
+                        await self.exchange.futures_cancel_all_open_orders(
+                            symbol=symbol.upper(),
+                            recvWindow=5000 # Use hardcoded or nonce service
+                        )
+                        logger.info(f"💥 Force canceled all {symbol} orders on exchange (Futures)")
+            
+            except Exception as e:
+                logger.warning(f"Exchange-side Cancel All failed (non-critical): {e}")
+
+        # 2. Prune stale orders from cache
         await self.prune_stale_orders()
         
-        # Now only iterate truly open orders
+        # 3. Clean up local state
         open_states = [OrderState.PENDING_SUBMIT.value, OrderState.SUBMITTED.value, OrderState.PARTIAL_FILL.value]
         open_orders = [o for o in list(self._orders.values()) if o.state in open_states]
         
         for order in open_orders:
             if symbol and order.symbol != symbol.lower():
                 continue
+            # Mark as canceled locally since we nuked them on exchange
+            # We still call cancel_order just to be safe and update DB state properly
             await self.cancel_order(order.client_order_id)
     
     async def prune_stale_orders(self, max_age_seconds: float = 600):

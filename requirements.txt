@@ -13,6 +13,10 @@ scikit-learn==1.3.2             # ML utilities
 hmmlearn==0.3.0                 # Hidden Markov Models
 statsmodels==0.14.1             # Statistical models
 
+# Analytics & Optimization
+empyrical>=0.5.5                # Risk metrics (Sharpe, Sortino, MaxDD)
+optuna>=3.5.0                   # Bayesian hyperparameter optimization
+
 # Monitoring & Visualization
 streamlit>=1.30.0               # Dashboard
 plotly==5.18.0                  # Interactive charts

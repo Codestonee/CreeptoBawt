@@ -60,6 +60,9 @@ class PositionTracker:
         self._reconciliation_task: Optional[asyncio.Task] = None
         self._reconciliation_interval: int = 60  # seconds
         
+        # Cache for deduplication of backfilled trades (session based)
+        self._recovered_trades_cache: set = set()
+        
     async def initialize(self) -> bool:
         """
         Initialize position tracker. MUST be called before any trading.
@@ -723,7 +726,8 @@ class PositionTracker:
             for trade in rest_trades:
                 trade_id = str(trade.get('id', ''))
                 
-                if trade_id and trade_id not in local_trade_ids:
+                # Check DB AND local dedicated cache of recovered trades
+                if trade_id and trade_id not in local_trade_ids and trade_id not in self._recovered_trades_cache:
                     # This trade exists on Binance but not in our database!
                     qty = float(trade.get('qty', 0))
                     price = float(trade.get('price', 0))
@@ -757,6 +761,7 @@ class PositionTracker:
                     
                     try:
                         self.db.submit_write_task(trade_record)
+                        self._recovered_trades_cache.add(trade_id) # Add to session cache
                         recovered_count += 1
                     except Exception as e:
                         logger.error(f"Failed to log recovered trade: {e}")

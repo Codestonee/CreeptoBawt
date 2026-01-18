@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     }
     
     # Trading Pairs
-    TRADING_SYMBOLS: list[str] = ["ethusdc", "ltcusdc", "xrpusdc"]  # Affordable pairs for $50 capital
+    TRADING_SYMBOLS: list[str] = ["xrpusdc"]  # XRP has ~$11 position above min notional
 
     # Paper Trading Config
     PAPER_TRADING: bool = False       # True = Simulated, False = Real Money
@@ -104,7 +104,7 @@ class Settings(BaseSettings):
     GLT_USE_ITERATIVE_THETA: bool = True     # Use enhanced theta calculation (slower but more accurate)
     
     # Symbol Whitelist (Empty = All Allowed)
-    APPROVED_SYMBOLS: list[str] = ['ethusdc', 'ltcusdc', 'xrpusdc']  # Matches TRADING_SYMBOLS
+    APPROVED_SYMBOLS: list[str] = ['xrpusdc']  # Matches TRADING_SYMBOLS
     
     ADMIN_RESUME_CODE: str = "creep-resume-123"      # Simple code to unhalt
     # --------------------------------------------------------------------------

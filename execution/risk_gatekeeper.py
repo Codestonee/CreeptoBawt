@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import time
 from dataclasses import dataclass
@@ -42,6 +43,9 @@ class RiskGatekeeper:
         self._halt_reason: str = ""
         self._recent_orders: list = []  # For rate limiting
         self._consecutive_losses: int = 0
+        
+        # Async lock for atomic PnL updates
+        self._pnl_lock = asyncio.Lock()
 
     async def validate_order(
         self, 
@@ -100,8 +104,8 @@ class RiskGatekeeper:
             if not position_check.is_allowed:
                 return position_check
             
-            # LAYER 5: Daily loss limit
-            loss_check = self._check_daily_loss()
+            # LAYER 5: Daily loss limit (Atomic Check)
+            loss_check = await self._check_daily_loss()
             if not loss_check.is_allowed:
                 return loss_check
             
@@ -258,20 +262,21 @@ class RiskGatekeeper:
         
         return RiskCheckResult(True, "Position limits OK", "INFO")
 
-    def _check_daily_loss(self) -> RiskCheckResult:
-        """Halt trading if daily loss limit exceeded."""
-        # Reset counter if new day
-        if datetime.now().date() != self._daily_loss_start.date():
-            self._daily_pnl = 0.0
-            self._daily_loss_start = datetime.now()
-            self._consecutive_losses = 0
-        
-        if self._daily_pnl < -self.max_daily_loss:
-            self._halt_trading(f"Daily loss limit hit: ${abs(self._daily_pnl):.2f}")
-            return RiskCheckResult(False, 
-                f"DAILY LOSS LIMIT: ${abs(self._daily_pnl):.2f} > ${self.max_daily_loss}", "CRITICAL")
-        
-        return RiskCheckResult(True, "Daily loss check passed", "INFO")
+    async def _check_daily_loss(self) -> RiskCheckResult:
+        """Halt trading if daily loss limit exceeded (Async + Locked)."""
+        async with self._pnl_lock:
+            # Reset counter if new day
+            if datetime.now().date() != self._daily_loss_start.date():
+                self._daily_pnl = 0.0
+                self._daily_loss_start = datetime.now()
+                self._consecutive_losses = 0
+            
+            if self._daily_pnl < -self.max_daily_loss:
+                self._halt_trading(f"Daily loss limit hit: ${abs(self._daily_pnl):.2f}")
+                return RiskCheckResult(False, 
+                    f"DAILY LOSS LIMIT: ${abs(self._daily_pnl):.2f} > ${self.max_daily_loss}", "CRITICAL")
+            
+            return RiskCheckResult(True, "Daily loss check passed", "INFO")
 
     async def _check_exposure_limits(self, order_value: float) -> RiskCheckResult:
         """
@@ -314,13 +319,14 @@ class RiskGatekeeper:
         self._halt_reason = reason
         logger.critical(f"🚨 TRADING HALTED: {reason}")
     
-    def update_pnl(self, pnl_delta: float):
-        """Update daily PnL tracking (Called by Executor on Fill)."""
-        self._daily_pnl += pnl_delta
-        if pnl_delta < 0:
-            self._consecutive_losses += 1
-        else:
-            self._consecutive_losses = 0
+    async def update_pnl(self, pnl_delta: float):
+        """Update daily PnL tracking (Async + Locked)."""
+        async with self._pnl_lock:
+            self._daily_pnl += pnl_delta
+            if pnl_delta < 0:
+                self._consecutive_losses += 1
+            else:
+                self._consecutive_losses = 0
 
     def update_exposure(self, value_delta: float):
         # Legacy/Unused if we rely on OrderManager

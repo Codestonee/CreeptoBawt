@@ -348,6 +348,66 @@ def get_metrics() -> Dict[str, Any]:
 async def api_metrics():
     return JSONResponse(get_metrics())
 
+@app.get("/api/performance")
+async def api_performance():
+    """
+    Get advanced performance analytics using empyrical.
+    Returns Sharpe, Sortino, MaxDD, win rate, profit factor.
+    """
+    from utils.analytics import get_performance_summary
+    
+    performance = {
+        "sharpe_ratio": 0.0,
+        "sortino_ratio": 0.0,
+        "max_drawdown_pct": 0.0,
+        "win_rate": 0.0,
+        "profit_factor": 0.0,
+        "total_trades": 0,
+        "total_pnl": 0.0,
+        "avg_pnl_per_trade": 0.0
+    }
+    
+    conn = get_db_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='trades'")
+            if cursor.fetchone():
+                trades_df = pd.read_sql(
+                    "SELECT timestamp, pnl, side, symbol FROM trades ORDER BY timestamp ASC", 
+                    conn
+                )
+                
+                if not trades_df.empty:
+                    # Convert to list of dicts for analytics
+                    trades = trades_df.to_dict('records')
+                    
+                    # Build equity history for max drawdown
+                    initial = settings.INITIAL_CAPITAL
+                    equity_history = []
+                    cumulative = initial
+                    for _, row in trades_df.iterrows():
+                        cumulative += row['pnl']
+                        equity_history.append({
+                            'timestamp': row['timestamp'],
+                            'total_equity': cumulative
+                        })
+                    
+                    # Get summary from analytics module
+                    summary = get_performance_summary(
+                        trades, 
+                        equity_history,
+                        annualization_factor=252 * 24  # Hourly for HFT
+                    )
+                    performance.update(summary)
+                    
+        except Exception as e:
+            logger.warning(f"Performance calculation failed: {e}")
+        finally:
+            conn.close()
+    
+    return JSONResponse(performance)
+
 @app.get("/api/latency")
 async def api_latency():
     """

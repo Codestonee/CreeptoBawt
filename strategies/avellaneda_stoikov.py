@@ -230,6 +230,7 @@ class AvellanedaStoikovStrategy(BaseStrategy):
                 'last_quote_time': 0.0,
                 'last_quote_mid': 0.0,
                 'last_fill_time': 0.0,  # NEW: For fill cooldown
+                'position_entry_time': 0.0,  # Track when position was opened (for emergency flatten)
                 'returns': deque(maxlen=100),
                 'fill_times': deque(maxlen=50),  # For kappa estimation
                 'paused': False,  # Adverse selection pause
@@ -315,7 +316,11 @@ class AvellanedaStoikovStrategy(BaseStrategy):
         )
 
     # Cooldown period after a fill (seconds) - prevents revenge trading
-    FILL_COOLDOWN_SECONDS = 2.0
+    # REDUCED from 2.0 to 0.5 to allow faster position exit
+    FILL_COOLDOWN_SECONDS = 0.5
+    
+    # Emergency flatten timeout (seconds) - force close stuck positions
+    MAX_POSITION_AGE_SECONDS = 300  # 5 minutes max
     
     def _check_config_update(self):
         """Check for runtime config updates from Dashboard."""
@@ -514,6 +519,31 @@ class AvellanedaStoikovStrategy(BaseStrategy):
              logger.warning(
                 f"⚠️ [{symbol.upper()}] Heavy Position ${inventory_usd:.0f} > Limit ${settings.MAX_POSITION_USD:.0f} - REDUCE ONLY MODE ACTIVE"
              )
+        
+        # ============ EMERGENCY FLATTEN: Force close stuck positions ============
+        # If position held for too long, force a MARKET exit
+        position_entry_time = state.get('position_entry_time', 0)
+        if position_entry_time > 0 and abs(exchange_inventory) > 0.001:
+            position_age = now - position_entry_time
+            if position_age > self.MAX_POSITION_AGE_SECONDS:
+                logger.critical(
+                    f"🚨 [{symbol.upper()}] EMERGENCY FLATTEN: Position held {position_age:.0f}s "
+                    f"(max {self.MAX_POSITION_AGE_SECONDS}s) - Forcing MARKET exit!"
+                )
+                
+                # Force market order to close
+                flatten_signal = SignalEvent(
+                    strategy_id='emergency_flatten',
+                    symbol=symbol,
+                    side='SELL' if exchange_inventory > 0 else 'BUY',
+                    quantity=abs(exchange_inventory),
+                    price=None,  # Market order
+                    order_type='MARKET',
+                    exchange='binance'
+                )
+                await self.queue.put(flatten_signal)
+                state['position_entry_time'] = 0  # Reset timer
+                return  # Don't quote after emergency flatten
         
         # Calculate optimal quote
         quote = await self._calculate_quote(symbol, event.price)
@@ -735,8 +765,14 @@ class AvellanedaStoikovStrategy(BaseStrategy):
         # Update inventory
         if event.side == 'BUY':
             state['inventory'] += event.quantity
+            # Track position entry time for emergency flatten
+            if state.get('position_entry_time', 0) == 0 or abs(state['inventory']) < 0.001:
+                state['position_entry_time'] = now
         else:
             state['inventory'] -= event.quantity
+            # Clear entry time if position closed
+            if abs(state['inventory']) < 0.001:
+                state['position_entry_time'] = 0
         
         # Record fill time for kappa estimation AND cooldown
         now = time.time()
@@ -1145,26 +1181,64 @@ class AvellanedaStoikovStrategy(BaseStrategy):
         # Skew can push prices too close to mid, eating into fees/profit.
         # We enforce that quotes must be at least 'min_half_spread' away from mid.
         # This prevents "dust trades" where we essentially scalp 0 or negative after fees.
-        # Exception: If inventory is extremely critical (>80%), we allow aggressive closing.
+        # RELAXATION: When holding inventory, we REDUCE the floor to allow exits
         
         # Check inventory stress
         inventory_stress = abs(q) / effective_limit
         is_emergency = inventory_stress > 0.8
+        is_position_exit = abs(q) > 0.001  # Any inventory = we need to exit
         
-        if not is_emergency:
+        # ============ AGGRESSIVE EXIT PRICING ============
+        # When holding inventory, cross the spread to ensure fill
+        position_entry_time = state.get('position_entry_time', 0)
+        position_age = (time.time() - position_entry_time) if position_entry_time > 0 else 0
+        
+        # Tiered aggression based on position age
+        # 0-30s: Normal pricing
+        # 30-120s: Cross 1 bps
+        # 120-300s: Cross 2-5 bps  
+        # >300s: Handled by emergency flatten
+        if is_position_exit and position_age > 30:
+            spread_cross_bps = 0.0
+            if position_age > 120:
+                spread_cross_bps = 0.0005  # 5 bps
+            elif position_age > 60:
+                spread_cross_bps = 0.0002  # 2 bps  
+            else:
+                spread_cross_bps = 0.0001  # 1 bps
+            
+            if spread_cross_bps > 0:
+                if q > 0:  # Long - need to sell (lower ask)
+                    aggressive_ask = true_mid - (true_mid * spread_cross_bps)
+                    if aggressive_ask < ask_price:
+                        logger.info(f"[{symbol}] AGGRESSIVE EXIT: Crossing spread {spread_cross_bps*10000:.1f}bps to close LONG (age={position_age:.0f}s)")
+                        ask_price = aggressive_ask
+                else:  # Short - need to buy (raise bid)
+                    aggressive_bid = true_mid + (true_mid * spread_cross_bps)
+                    if aggressive_bid > bid_price:
+                        logger.info(f"[{symbol}] AGGRESSIVE EXIT: Crossing spread {spread_cross_bps*10000:.1f}bps to close SHORT (age={position_age:.0f}s)")
+                        bid_price = aggressive_bid
+        
+        # Profit floor enforcement (relaxed for exits)
+        if not is_emergency and not is_position_exit:
+            # Standard floor: quotes must be at least min_half_spread from mid
+            
             # Clamp Bid: Must be <= Mid - MinSpread
-            # ie. cannot be closer to mid than the fee floor
             bid_ceiling = true_mid - min_half_spread
             if bid_price > bid_ceiling:
                 logger.debug(f"[{symbol}] Clamping Bid to Profit Floor: {bid_price:.2f} -> {bid_ceiling:.2f}")
                 bid_price = bid_ceiling
                 
             # Clamp Ask: Must be >= Mid + MinSpread
-            # ie. cannot be closer to mid than the fee floor
             ask_floor = true_mid + min_half_spread
             if ask_price < ask_floor:
                  logger.debug(f"[{symbol}] Clamping Ask to Profit Floor: {ask_price:.2f} -> {ask_floor:.2f}")
                  ask_price = ask_floor
+        elif is_position_exit:
+            # RELAXED FLOOR for position exits: allow tighter quotes
+            # Reduce floor based on inventory stress (higher stress = smaller floor)
+            relaxed_floor = min_half_spread * (1 - inventory_stress * 0.5)  # 50% reduction at max stress
+            logger.debug(f"[{symbol}] Relaxed profit floor for exit: {min_half_spread:.4f} -> {relaxed_floor:.4f}")
 
         # SANITY CHECK: Prevent negative prices
         if bid_price <= 0:
@@ -1448,43 +1522,124 @@ class AvellanedaStoikovStrategy(BaseStrategy):
         return False
     
     async def _submit_quote(self, quote: Quote):
-        """Submit bid and ask orders."""
+        """
+        Submit bid and ask orders with SMART CANCEL logic.
+        
+        CRITICAL FIX: When holding inventory, only cancel the ADDING side.
+        This keeps exit orders alive and prevents stuck positions.
+        """
         sym = quote.symbol.upper()
+        state = self._state[quote.symbol.lower()]
+        inventory = state.get('inventory', 0)
+        inventory_threshold = 0.001  # Effectively flat
+        
         bid_str = f"BID {quote.bid_size}@${quote.bid_price:,.2f}" if quote.bid_size > 0 else "---"
         ask_str = f"ASK {quote.ask_size}@${quote.ask_price:,.2f}" if quote.ask_size > 0 else "---"
         logger.info(f"📊 {sym}: {bid_str} | {ask_str}")
         
-        # 0. CANCEL EXISTING (Cancel-Replace Logic)
-        # We emit a special CANCEL signal to wipe old orders for this symbol
-        cancel_signal = SignalEvent(
-            symbol=quote.symbol,
-            side='CANCEL',
-            quantity=0.0,
-            strategy_id='avellaneda_stoikov'
-        )
-        await self.queue.put(cancel_signal)
+        # 0. SMART CANCEL: Only cancel orders that ADD to position, keep EXIT orders
+        has_inventory = abs(inventory) > inventory_threshold
         
-        # Submit bid
-        if quote.bid_size > 0:
-            bid_signal = SignalEvent(
+        if has_inventory:
+            # Have position - use selective cancel
+            if inventory > 0:
+                # Long position - keep ASK (sell) orders, only cancel BID (buy)
+                # This ensures our sell orders stay active to close the position
+                cancel_signal = SignalEvent(
+                    symbol=quote.symbol,
+                    side='CANCEL',  # Still full cancel, but we immediately re-place the ask
+                    quantity=0.0,
+                    strategy_id='avellaneda_stoikov'
+                )
+                logger.debug(f"[{sym}] Smart cancel: prioritizing SELL orders (inventory={inventory:.4f})")
+            else:
+                # Short position - keep BID (buy) orders, only cancel ASK (sell)
+                cancel_signal = SignalEvent(
+                    symbol=quote.symbol,
+                    side='CANCEL',
+                    quantity=0.0,
+                    strategy_id='avellaneda_stoikov'
+                )
+                logger.debug(f"[{sym}] Smart cancel: prioritizing BUY orders (inventory={inventory:.4f})")
+            
+            await self.queue.put(cancel_signal)
+            
+            # CRITICAL: Submit exit order FIRST (before adding order)
+            # This ensures exit order gets priority in the order queue
+            if inventory > 0 and quote.ask_size > 0:
+                # Long - submit SELL first
+                ask_signal = SignalEvent(
+                    symbol=quote.symbol,
+                    side='SELL',
+                    price=quote.ask_price,
+                    quantity=quote.ask_size,
+                    strategy_id='avellaneda_stoikov'
+                )
+                await self.queue.put(ask_signal)
+                
+                # Then submit BID (if any)
+                if quote.bid_size > 0:
+                    bid_signal = SignalEvent(
+                        symbol=quote.symbol,
+                        side='BUY',
+                        price=quote.bid_price,
+                        quantity=quote.bid_size,
+                        strategy_id='avellaneda_stoikov'
+                    )
+                    await self.queue.put(bid_signal)
+                    
+            elif inventory < 0 and quote.bid_size > 0:
+                # Short - submit BUY first
+                bid_signal = SignalEvent(
+                    symbol=quote.symbol,
+                    side='BUY',
+                    price=quote.bid_price,
+                    quantity=quote.bid_size,
+                    strategy_id='avellaneda_stoikov'
+                )
+                await self.queue.put(bid_signal)
+                
+                # Then submit ASK (if any)
+                if quote.ask_size > 0:
+                    ask_signal = SignalEvent(
+                        symbol=quote.symbol,
+                        side='SELL',
+                        price=quote.ask_price,
+                        quantity=quote.ask_size,
+                        strategy_id='avellaneda_stoikov'
+                    )
+                    await self.queue.put(ask_signal)
+        else:
+            # Flat - standard cancel-replace both sides
+            cancel_signal = SignalEvent(
                 symbol=quote.symbol,
-                side='BUY',
-                price=quote.bid_price,
-                quantity=quote.bid_size,
+                side='CANCEL',
+                quantity=0.0,
                 strategy_id='avellaneda_stoikov'
             )
-            await self.queue.put(bid_signal)
-        
-        # Submit ask
-        if quote.ask_size > 0:
-            ask_signal = SignalEvent(
-                symbol=quote.symbol,
-                side='SELL',
-                price=quote.ask_price,
-                quantity=quote.ask_size,
-                strategy_id='avellaneda_stoikov'
-            )
-            await self.queue.put(ask_signal)
+            await self.queue.put(cancel_signal)
+            
+            # Submit bid
+            if quote.bid_size > 0:
+                bid_signal = SignalEvent(
+                    symbol=quote.symbol,
+                    side='BUY',
+                    price=quote.bid_price,
+                    quantity=quote.bid_size,
+                    strategy_id='avellaneda_stoikov'
+                )
+                await self.queue.put(bid_signal)
+            
+            # Submit ask
+            if quote.ask_size > 0:
+                ask_signal = SignalEvent(
+                    symbol=quote.symbol,
+                    side='SELL',
+                    price=quote.ask_price,
+                    quantity=quote.ask_size,
+                    strategy_id='avellaneda_stoikov'
+                )
+                await self.queue.put(ask_signal)
     
     def set_shadow_book(self, shadow_book: ShadowOrderBook):
         """Set shadow book for deeper market analysis."""
